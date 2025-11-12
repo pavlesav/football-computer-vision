@@ -1,3 +1,5 @@
 videos/*
 
 *.mp4
+embeddings_cache.pkl
+embeddings_cache_7_min.pkl
