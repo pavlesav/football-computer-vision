@@ -6,10 +6,8 @@ Automatic team detection and ball tracking for football/soccer videos using comp
 
 **▶️ Watch 10-second annotated sample** - See the detection and tracking in action!
 
-<video width="100%" controls>
-  <source src="./sample_video/10_sec_annotated.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+https://github.com/user-attachments/assets/b56c0a54-0281-4361-9705-ecaed21805f4
+
 
 ## 🎯 Features
 
