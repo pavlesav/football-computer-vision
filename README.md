@@ -1,6 +1,6 @@
 # ⚽ Football Team Detection & Tracking
 
-Automatic team detection and ball tracking for football/soccer videos using computer vision and deep learning.
+Automatic team detection and ball tracking for football videos using computer vision and deep learning. Montenegro First Division match between FK Buducnost and FK Sutjeska. 
 
 ## 🎬 Sample video 10 seconds
 ![Demo](assets/demo.gif)
@@ -14,16 +14,14 @@ Automatic team detection and ball tracking for football/soccer videos using comp
 - **Multi-Video Support**: Optimized for both short clips and full matches
 - **No Manual Labeling**: Fully unsupervised - just provide the video!
 
-## 🚀 Demo
-
 | Input | Output |
 |-------|--------|
 | Raw football footage | Annotated with team colors + ball tracking |
 
 **Features in Action:**
-- 🔵 Blue ellipses = Team 1
-- ⚪ Gray ellipses = Team 2  
-- 🟡 Yellow ellipses = Referee
+- 🔵 Blue ellipses = Buducnost
+- ⚪ Yellow ellipses = Sutjeska
+- 🟡 Gray ellipses = Referee
 - 🟢 Green triangle = Ball position
 
 ## 📋 Requirements
@@ -63,8 +61,4 @@ pip install -r requirements.txt
 ```
 
 **Processing time**: ~5-10 minutes on CPU for 7-minute video
-
-## 📊 How It Works
-
-### Pipeline Overview
 
