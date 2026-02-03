@@ -1,10 +1,12 @@
 # ⚽ Football Team Detection & Tracking
 
-Automatic team detection and ball tracking for football videos using computer vision and deep learning. Montenegro First Division match between FK Buducnost and FK Sutjeska. 
+Automatic **team detection (unsupervised)** + **player tracking** + **ball tracking** for football videos using computer vision and deep learning.
 
-## 🎬 Sample video 10 seconds
-![Demo](assets/demo.gif)
+Demo footage: Montenegro First Division match — FK Budućnost vs FK Sutjeska.
 
+## 🎬 Demo (10s)
+
+[![Demo](assets/demo.gif)](sample_video.mp4)
 
 ## 🎯 Features
 
