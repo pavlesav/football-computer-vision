@@ -1,0 +1,12 @@
+# Football Detection Dataset
+# Auto-generated — edit class list if you add goalkeeper/referee classes
+
+path: C:/Users/pavle/OneDrive/Desktop/my github/football-computer-vision/football-computer-vision/dataset
+train: images/train
+val: images/val
+
+names:
+  0: player
+  1: ball
+  2: goalkeeper
+  3: referee

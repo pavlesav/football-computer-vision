@@ -1,66 +1,87 @@
-# ⚽ Football Team Detection & Tracking
+# Football Match Computer Vision
 
-Automatic **team detection (unsupervised)** + **player tracking** + **ball tracking** for football videos using computer vision and deep learning.
+Automated player detection, tracking, and team classification for broadcast football (soccer) footage.
 
-Demo footage: Montenegro First Division match — FK Budućnost vs FK Sutjeska.
+## What it does
 
-## 🎬 Demo (10s)
+- **Player & Ball Detection** — Fine-tuned YOLOv8n detects players, goalkeepers, referees, and the ball (4 custom classes)
+- **Object Tracking** — ByteTrack assigns persistent IDs across frames
+- **Team Classification** — ResNet18 appearance embeddings + KMeans clustering assigns each player to a team
+- **Temporal Smoothing** — Majority vote over track history prevents team assignment flickering
+- **Interactive Visualization** — 3D PCA scatter plot with Plotly for cluster introspection
+- **Annotated Output** — Exports video with team-colored ellipses under players and triangle markers on the ball
 
-[![Demo](assets/demo.gif)](sample_video.mp4)
+## Dataset
 
-## 🎯 Features
+Montenegro First Division (1.CFL), Round 20 — **FK Budućnost vs FK Sutjeska**, 21.02.2026.
 
-- **Automatic Team Clustering**: Uses ResNet50 embeddings + UMAP + K-Means to automatically identify teams by uniform color
-- **Real-time Player Tracking**: Tracks players across frames with temporal smoothing
-- **Smart Ball Detection**: Possession-based ball tracking with motion prediction
-- **Multi-Video Support**: Optimized for both short clips and full matches
-- **No Manual Labeling**: Fully unsupervised - just provide the video!
+- 300 frames extracted and labeled in CVAT
+- 4 custom YOLO classes: `player`, `ball`, `goalkeeper`, `referee`
+- Fine-tuned YOLOv8n: mAP50 = 0.741
 
-| Input | Output |
-|-------|--------|
-| Raw football footage | Annotated with team colors + ball tracking |
+## Project Structure
 
-**Features in Action:**
-- 🔵 Blue ellipses = Buducnost
-- ⚪ Yellow ellipses = Sutjeska
-- 🟡 Gray ellipses = Referee
-- 🟢 Green triangle = Ball position
+```
+├── main.ipynb              # Main pipeline notebook
+├── dataset_creation.ipynb  # Dataset extraction & labeling pipeline
+├── src/
+│   ├── config.py           # All configuration constants
+│   ├── video_utils.py      # Video I/O, clip extraction (ffmpeg)
+│   ├── detection.py        # YOLOv8 player & ball detection
+│   ├── team_classifier.py  # ResNet18 embeddings → KMeans team assignment
+│   ├── tracking.py         # ByteTrack wrapper & temporal smoothing
+│   ├── visualization.py    # Ellipses, triangles, bounding boxes
+│   └── dataset.py          # Frame extraction & pre-annotation utilities
+├── dataset/                # Training data (images gitignored)
+│   ├── data.yaml           # YOLO dataset config
+│   └── cvat_annotations.zip
+├── videos/                 # Source videos (gitignored)
+├── output/                 # Annotated output videos (gitignored)
+├── requirements.txt
+└── README.md
+```
 
-## 📋 Requirements
+## Quick Start
 
 ```bash
+# Install dependencies
 pip install -r requirements.txt
+
+# Make sure ffmpeg is available
+ffmpeg -version
+
+# Open and run the notebook
+jupyter notebook main.ipynb
 ```
 
-**Core Dependencies:**
-- Python 3.8+
-- PyTorch
-- OpenCV
-- Ultralytics YOLO
-- scikit-learn
-- umap-learn
-- transformers (optional, for SigLip)
+## Pipeline Overview
 
-## 🎬 Quick Start
+### 1. Detection (Fine-tuned YOLOv8 + ByteTrack)
+A YOLOv8n model fine-tuned on 300 labeled frames detects players, goalkeepers, referees, and the ball. ByteTrack provides persistent track IDs across frames.
 
-### 1. Short Videos (< 1 minute)
+### 2. Team Classification (ResNet18 + KMeans)
+For each detected player:
+1. Crop the full bounding box
+2. Extract a 512-dim appearance embedding via a pretrained ResNet18 backbone
+3. A global KMeans classifier (fitted on sampled frames) assigns the embedding to Team A or Team B
 
-```python
-# Open code.ipynb in Jupyter
-# Set VIDEO_PATH = 'your_video.mp4'
-# Run all cells
-```
+YOLO class IDs route referees directly (no clustering needed).
 
-**Processing time**: ~2-5 minutes on CPU for 10-second clip
+### 3. Temporal Smoothing
+Each track's team assignment is smoothed using majority vote over its history, preventing frame-to-frame flickering.
 
-### 2. Long Videos (7+ minutes)
+### 4. Visualization & Export
+- **Players**: Team-colored ellipses at feet + track ID label
+- **Ball**: Green triangle marker above the ball
+- **3D PCA**: Interactive Plotly scatter plot to inspect cluster quality
+- Output exported as MP4
 
-```python
-# Open 7_min_test.ipynb in Jupyter
-# Uses ResNet50 (10-15x faster) + frame sampling
-# Set VIDEO_PATH = 'your_long_video.mp4'
-# Run all cells
-```
+## Requirements
 
-**Processing time**: ~5-10 minutes on CPU for 7-minute video
+- Python 3.10+
+- ffmpeg (for clip extraction)
+- CPU works for testing; GPU recommended for full match processing
 
+## License
+
+See [LICENSE](LICENSE).

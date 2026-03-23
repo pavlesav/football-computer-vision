@@ -1,4 +1,23 @@
-videos/*
+# Videos (too large for git)
+videos/
 
-embeddings_cache.pkl
-embeddings_cache_7_min.pkl
+# Output videos
+output/
+
+# Dataset (images too large for git)
+dataset/images/
+dataset/labels/
+*.cache
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Model weights
+*.pt
+
+# OS
+.DS_Store
+Thumbs.db
