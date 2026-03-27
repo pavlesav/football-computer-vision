@@ -60,13 +60,11 @@ def extract_dataset_frames(
     return output_dir
 
 
-# YOLO custom class mapping
-# (different from COCO — our own task-specific classes)
+# YOLO custom class mapping — 2-class model
+# Role assignment (team A/B, goalkeeper, referee) is handled in post-processing.
 CUSTOM_CLASSES = {
-    0: "player",
+    0: "person",
     1: "ball",
-    2: "goalkeeper",
-    3: "referee",
 }
 
 
@@ -159,7 +157,7 @@ def export_cvat_zip(dataset_dir: Path = None) -> Path:
     label_files = sorted(labels_dir.glob("*.txt"))
     image_files = sorted(images_dir.glob("*.jpg"))
 
-    class_names = ["player", "ball", "goalkeeper", "referee"]
+    class_names = ["person", "ball"]
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # obj.names — one class per line
@@ -190,17 +188,17 @@ def create_data_yaml(dataset_dir: Path = None) -> Path:
     yaml_path = dataset_dir / "data.yaml"
 
     content = f"""# Football Detection Dataset
-# Auto-generated — edit class list if you add goalkeeper/referee classes
+# 2-class model: YOLO detects person + ball only.
+# Role assignment (team A/B, goalkeeper, referee) is handled in post-processing.
 
 path: {dataset_dir.as_posix()}
 train: images/train
 val: images/val
 
+nc: 2
 names:
-  0: player
+  0: person
   1: ball
-  2: goalkeeper
-  3: referee
 """
     yaml_path.write_text(content)
     print(f"Created {yaml_path}")

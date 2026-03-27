@@ -1,12 +1,12 @@
 # Football Detection Dataset
-# Auto-generated — edit class list if you add goalkeeper/referee classes
+# 2-class model: YOLO detects person + ball only.
+# Role assignment (team A/B, goalkeeper, referee) is handled in post-processing.
 
-path: C:/Users/pavle/OneDrive/Desktop/my github/football-computer-vision/football-computer-vision/dataset
+path: C:/Users/PC/Desktop/GitHub/football-computer-vision/dataset
 train: images/train
 val: images/val
 
+nc: 2
 names:
-  0: player
+  0: person
   1: ball
-  2: goalkeeper
-  3: referee
