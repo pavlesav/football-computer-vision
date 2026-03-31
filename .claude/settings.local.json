@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(where.exe python:*)",
+      "Bash(where.exe python3:*)",
+      "Bash(where.exe conda:*)",
+      "Bash(where.exe ffmpeg:*)",
+      "Bash(powershell.exe -Command \"[Environment]::SetEnvironmentVariable\\(''Path'', [Environment]::GetEnvironmentVariable\\(''Path'', ''User''\\) + '';C:\\\\Users\\\\PC\\\\AppData\\\\Local\\\\Microsoft\\\\WinGet\\\\Packages\\\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\\\ffmpeg-8.1-full_build\\\\bin'', ''User''\\)\")"
+    ]
+  }
+}

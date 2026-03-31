@@ -1,53 +1,44 @@
 import cv2
 import numpy as np
 import torch
+from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from collections import Counter
 from ultralytics import YOLO
 
 from .config import Config
-from .segmentation import segment_frame, extract_player_mask, extract_lab_features
+from .segmentation import (segment_frame, extract_player_mask,
+                           extract_cnn_embeddings_batch)
 
-_FEAT_DIM = 3  # L, a, b — median Lab color of seg-masked jersey pixels
-
-# Players whose max team-membership probability falls below this threshold
-# are classified as Referee / Goalkeeper (unique kit → outlier from both teams).
-_REFEREE_CONF_THRESHOLD = 0.75
+_CNN_DIM = 512     # raw ResNet18 embedding size
+_PCA_DIM = 32      # reduced dimension for GMM clustering
 
 
 class TeamClassifier:
     """
-    Classify players into teams using seg-masked Lab median jersey color.
+    Classify players into teams using CNN embeddings from masked crops.
 
     For each detected person:
       1. Run YOLOv8-seg on the full frame to get a person mask.
-      2. Slice the jersey area (top 40% height, center 50% width).
-      3. Compute the per-pixel median in Lab color space over only the
-         masked foreground pixels — grass, ads, and background are excluded.
+      2. Apply the mask to the player crop (background zeroed).
+      3. Extract a 512-dim embedding via frozen ResNet18 backbone.
 
-    Lab is perceptually uniform: L (lightness) separates white from dark kits,
-    a (green↔red) and b (blue↔yellow) separate most team colors.
-    A 3-dim GMM is stable, interpretable, and handles similar-looking kits
-    (e.g. white vs blue-striped) far better than HS histograms.
-
-    Fits k=2 Gaussians for the two outfield kit colors. Anyone whose max
-    membership probability falls below _REFEREE_CONF_THRESHOLD is classified
-    as Referee/Goalkeeper.
+    PCA reduces to 32 dims, then a two-pass k=2 GMM clusters into teams.
+    CNN features capture texture, pattern, logos, and color simultaneously
+    — separating kits that look similar in raw color statistics.
     """
 
-    # Team IDs used for visualization
     TEAM_A = 0
     TEAM_B = 1
-    TEAM_REFEREE = 2
 
     def __init__(self):
         self.gmm = None
+        self.pca = None
         self._fitted = False
         self.cluster_to_team = {}  # gmm cluster index → TEAM_A / TEAM_B
         self.seg_model = YOLO(Config.YOLO_SEG_MODEL)
         self._device = self._resolve_device()
-        print(f"TeamClassifier: seg-masked Lab median ({_FEAT_DIM}-dim, "
-              f"k=2 GMM + conf-gate referee)")
+        print(f"TeamClassifier: ResNet18 CNN embeddings ({_CNN_DIM}→{_PCA_DIM}-dim PCA, k=2 GMM)")
 
     @staticmethod
     def _resolve_device():
@@ -65,114 +56,113 @@ class TeamClassifier:
     # Feature extraction
     # ------------------------------------------------------------------
 
-    def _embedding_from_mask(self, frame: np.ndarray, bbox: list,
-                              frame_mask: np.ndarray) -> np.ndarray:
-        """Extract Lab median for one bbox given a pre-computed frame mask."""
-        x1, y1, x2, y2 = map(int, bbox)
-        h, w = y2 - y1, x2 - x1
-        if h < 8 or w < 8:
-            return np.zeros(_FEAT_DIM, dtype=np.float32)
-
-        masked_crop, mask = extract_player_mask(frame, bbox, frame_mask)
-
-        # Focus on jersey area: top 40% height, center 50% width
-        jersey_h = max(1, int(h * 0.40))
-        margin_w = int(w * 0.25)
-        jersey_crop = masked_crop[:jersey_h, margin_w:w - margin_w]
-        jersey_mask = mask[:jersey_h, margin_w:w - margin_w]
-
-        if jersey_crop.size == 0:
-            return np.zeros(_FEAT_DIM, dtype=np.float32)
-
-        return extract_lab_features(jersey_crop, jersey_mask)
-
-    def extract_embedding(self, frame: np.ndarray, bbox: list) -> np.ndarray:
-        """Extract Lab median from the seg-masked jersey area (single bbox).
-
-        Runs segmentation on the full frame. For multiple bboxes in the same
-        frame, prefer :meth:`extract_embeddings_batch` which segments once.
-        """
-        frame_mask = segment_frame(frame, self.seg_model, device=self._device)
-        return self._embedding_from_mask(frame, bbox, frame_mask)
+    def _crops_and_masks(self, frame: np.ndarray, bboxes: list,
+                         frame_mask: np.ndarray) -> tuple:
+        """Extract masked crops for a list of bboxes given a frame mask."""
+        crops, masks = [], []
+        for bbox in bboxes:
+            x1, y1, x2, y2 = map(int, bbox)
+            h, w = y2 - y1, x2 - x1
+            if h < 8 or w < 8:
+                crops.append(np.zeros((8, 8, 3), dtype=np.uint8))
+                masks.append(np.zeros((8, 8), dtype=np.uint8))
+                continue
+            masked_crop, mask = extract_player_mask(frame, bbox, frame_mask)
+            crops.append(masked_crop)
+            masks.append(mask)
+        return crops, masks
 
     def extract_embeddings_batch(self, frame: np.ndarray,
-                                  bboxes: list) -> np.ndarray:
-        """Extract Lab median features for multiple bboxes.
+                                 bboxes: list) -> np.ndarray:
+        """Extract CNN embeddings for multiple bboxes.
 
-        Runs YOLOv8-seg once on the full frame, then slices each bbox.
+        Runs YOLOv8-seg once on the full frame, then feeds each masked
+        crop through ResNet18 in a single batch.
         """
         if not bboxes:
-            return np.empty((0, _FEAT_DIM), dtype=np.float32)
+            return np.empty((0, _CNN_DIM), dtype=np.float32)
         frame_mask = segment_frame(frame, self.seg_model, device=self._device)
-        return np.array(
-            [self._embedding_from_mask(frame, b, frame_mask) for b in bboxes],
-            dtype=np.float32,
-        )
+        crops, masks = self._crops_and_masks(frame, bboxes, frame_mask)
+        return extract_cnn_embeddings_batch(crops, masks, device=self._device)
 
     # ------------------------------------------------------------------
     # Collection / fitting
     # ------------------------------------------------------------------
 
     def collect_embeddings(self, frame: np.ndarray, players: list) -> list:
-        """Collect embeddings for all detected persons on screen."""
+        """Collect CNN embeddings for all detected persons on screen."""
         bboxes = [p["bbox"] for p in players]
         if not bboxes:
             return []
         return list(self.extract_embeddings_batch(frame, bboxes))
 
-    def fit(self, all_embeddings: np.ndarray):
+    def fit(self, all_embeddings: np.ndarray, outlier_percentile: float = 5.0):
         """
-        Fit a 2-component GMM on Lab median jersey colors.
+        PCA + two-pass GMM fit.
 
-        Only the two dominant outfield kit colors are modelled. Outliers
-        (goalkeepers, referees, staff) are detected at predict time via the
-        confidence threshold — they don't need their own Gaussian.
+        1. PCA from 512 → 32 dims (removes noise, makes GMM stable).
+        2. Pass 1: rough k=2 GMM on all data.
+        3. Pass 2: remove bottom ``outlier_percentile`` by membership
+           probability, re-fit for tighter centroids.
         """
-        # Drop zero vectors (grass/background crops filtered out at extraction)
+        # Drop zero vectors (failed crops)
         valid = np.linalg.norm(all_embeddings, axis=1) > 0
         embeddings = all_embeddings[valid]
-        n_samples = len(embeddings)
+        n_total = len(embeddings)
 
-        self.gmm = GaussianMixture(
-            n_components=2,           # exactly 2 team colors
-            covariance_type="full",   # full covariance — 3-dim Lab is low-rank enough
+        # ── PCA ───────────────────────────────────────────────────────────
+        n_components = min(_PCA_DIM, embeddings.shape[0], embeddings.shape[1])
+        self.pca = PCA(n_components=n_components, random_state=42)
+        reduced = self.pca.fit_transform(embeddings)
+        variance_kept = self.pca.explained_variance_ratio_.sum()
+
+        gmm_kwargs = dict(
+            n_components=2,
+            covariance_type="full",
             n_init=10,
             max_iter=300,
             random_state=42,
         )
-        self.gmm.fit(embeddings)
+
+        # ── Pass 1: rough fit ─────────────────────────────────────────────
+        rough_gmm = GaussianMixture(**gmm_kwargs)
+        rough_gmm.fit(reduced)
+
+        probs = rough_gmm.predict_proba(reduced)
+        max_probs = probs.max(axis=1)
+        threshold = np.percentile(max_probs, outlier_percentile)
+        inlier_mask = max_probs >= threshold
+        n_removed = int((~inlier_mask).sum())
+
+        # ── Pass 2: re-fit on inliers only ─────────────────────────────────
+        clean = reduced[inlier_mask]
+
+        self.gmm = GaussianMixture(**gmm_kwargs)
+        self.gmm.fit(clean)
         self._fitted = True
 
-        # Assign team IDs: larger cluster → Team A (typically home/more players on screen)
-        labels = self.gmm.predict(embeddings)
+        # Assign team IDs: larger cluster → Team A
+        labels = self.gmm.predict(clean)
         counter = Counter(labels)
         (big_cluster, big_n), (small_cluster, small_n) = counter.most_common()
         self.cluster_to_team = {big_cluster: self.TEAM_A, small_cluster: self.TEAM_B}
 
-        # Estimate how many are referee/GK (low-confidence predictions)
-        probs = self.gmm.predict_proba(embeddings)
-        n_outliers = int((probs.max(axis=1) < _REFEREE_CONF_THRESHOLD).sum())
-
-        print(f"Team classification fitted on {n_samples} seg-masked Lab colors ({_FEAT_DIM}-dim)")
+        print(f"Team classification fitted on {n_total} samples "
+              f"({_CNN_DIM}→{n_components}-dim PCA, {variance_kept:.1%} variance)")
+        print(f"  Outliers removed: {n_removed} ({n_removed/n_total:.1%}) — "
+              f"GK/ref/staff (bottom {outlier_percentile:.0f}% membership probability)")
         print(f"  GMM weights  : Team A={self.gmm.weights_[big_cluster]:.1%}, "
               f"Team B={self.gmm.weights_[small_cluster]:.1%}")
         print(f"  Cluster sizes: Team A={big_n}, Team B={small_n}")
-        print(f"  Outliers (conf < {_REFEREE_CONF_THRESHOLD:.0%}): ~{n_outliers} "
-              f"({n_outliers/n_samples:.1%}) → classified as Referee/GK")
 
     def predict(self, embedding: np.ndarray) -> int:
-        """Predict team ID for a single Lab color vector.
-
-        Returns TEAM_REFEREE for anyone who doesn't confidently match either
-        team Gaussian (goalkeepers, referees, staff, ball-boys).
-        """
+        """Predict team ID for a single CNN embedding."""
         if not self._fitted:
             raise RuntimeError("TeamClassifier not fitted yet. Call fit() first.")
         if np.linalg.norm(embedding) == 0:
-            return self.TEAM_REFEREE
-        probs = self.gmm.predict_proba(embedding.reshape(1, -1))[0]
-        if probs.max() < _REFEREE_CONF_THRESHOLD:
-            return self.TEAM_REFEREE
+            return self.TEAM_A
+        reduced = self.pca.transform(embedding.reshape(1, -1))
+        probs = self.gmm.predict_proba(reduced)[0]
         cluster = int(probs.argmax())
         return self.cluster_to_team[cluster]
 
@@ -184,9 +174,8 @@ class TeamClassifier:
         """
         Add ``'team_id'`` to each player detection dict.
 
-        Each player is segmented, Lab median is extracted from the
-        jersey area, and the GMM predicts the most likely team cluster.
-        Outliers (goalkeepers, referees) are flagged via confidence gating.
+        Each player is segmented, a CNN embedding is extracted from the
+        masked crop, and the GMM predicts the most likely team cluster.
         """
         if not players:
             return players

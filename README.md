@@ -12,12 +12,21 @@ Automated player detection, tracking, and team classification for broadcast foot
 
 ## Dataset
 
-Montenegro First Division (1.CFL), Round 20 — **FK Budućnost vs FK Sutjeska**, 21.02.2026.
+**600 labeled frames** from 6 Montenegro First Division (1.CFL) matches:
 
-- 300 frames extracted and labeled in CVAT
+| Match | Round | Date | Frames |
+|---|---|---|---|
+| FK Budućnost vs FK Sutjeska | R20 | 21.02.2026 | 300 |
+| Arsenal vs Dečić | R22 | 21.03.2026 | 60 |
+| Bokelj vs Jedinstvo | R22 | 01.03.2026 | 60 |
+| Jezero vs Jedinstvo | R22 | 21.03.2026 | 60 |
+| Petrovac vs Mornar | R22 | 21.03.2026 | 60 |
+| Sutjeska vs Mladost | R22 | 21.03.2026 | 60 |
+
 - 2 YOLO classes: `person`, `ball` (goalkeeper/referee/team assigned in post-processing)
-- Fine-tuned YOLOv8n: mAP50 = 0.741
-- Ball annotations expanded with 60 frames each from 5 additional 1.CFL matches (Arsenal–Dečić, Bokelj–Jedinstvo, Jezero–Jedinstvo, Petrovac–Mornar, Sutjeska–Mladost)
+- Budućnost–Sutjeska frames: fully labeled (persons + ball)
+- Additional 5 matches: persons auto-labeled, ball manually annotated in CVAT
+- **Training**: single YOLOv8n train from scratch on all 600 frames (480 train / 120 val)
 
 ## Project Structure
 

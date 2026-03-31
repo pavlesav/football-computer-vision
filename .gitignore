@@ -4,9 +4,8 @@ videos/
 # Output videos
 output/
 
-# Dataset (images too large for git)
+# Dataset (images too large for git, labels tracked)
 dataset/images/
-dataset/labels/
 *.cache
 
 # Python

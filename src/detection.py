@@ -1,8 +1,59 @@
+from typing import List
+
 import numpy as np
 import torch
 from ultralytics import YOLO
 
 from .config import Config
+
+
+class BallInterpolator:
+    """Fill short ball detection gaps with linear bbox interpolation."""
+
+    def __init__(self, max_gap: int = 15):
+        self.max_gap = max_gap
+
+    def interpolate(self, frame_detections: List[dict]) -> List[dict]:
+        """
+        Fill frames where ball is missing by linearly interpolating the bbox
+        between the nearest detected positions before and after the gap.
+
+        Args:
+            frame_detections: list of per-frame detection dicts, each with a
+                              'ball' key (list of ball detections).
+
+        Returns:
+            The same list, modified in-place with interpolated ball entries.
+        """
+        # Collect frames where ball was detected: (frame_idx, bbox)
+        ball_frames = []
+        for i, det in enumerate(frame_detections):
+            if det["ball"]:
+                ball_frames.append((i, det["ball"][0]["bbox"]))
+
+        # Interpolate gaps between consecutive detections
+        for j in range(len(ball_frames) - 1):
+            idx_a, bbox_a = ball_frames[j]
+            idx_b, bbox_b = ball_frames[j + 1]
+            gap = idx_b - idx_a - 1
+
+            if 0 < gap <= self.max_gap:
+                for k in range(1, gap + 1):
+                    t = k / (gap + 1)
+                    interp_bbox = [
+                        int(bbox_a[c] + t * (bbox_b[c] - bbox_a[c]))
+                        for c in range(4)
+                    ]
+                    frame_detections[idx_a + k]["ball"] = [
+                        {
+                            "bbox": interp_bbox,
+                            "conf": 0.0,
+                            "cls_id": Config.BALL_CLASS_ID,
+                            "interpolated": True,
+                        }
+                    ]
+
+        return frame_detections
 
 
 class PlayerDetector:

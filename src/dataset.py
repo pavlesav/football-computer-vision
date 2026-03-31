@@ -4,182 +4,9 @@ import shutil
 from pathlib import Path
 
 from .config import Config
-from .detection import PlayerDetector
 
 
-def extract_dataset_frames(
-    video_path: Path = None,
-    output_dir: Path = None,
-    max_frames: int = 300,
-) -> Path:
-    """
-    Extract frames evenly distributed across the entire video for labeling.
-
-    Args:
-        video_path: Source video
-        output_dir: Where to save the dataset (default: project/dataset/)
-        max_frames: Number of frames to extract (evenly spaced across the video)
-
-    Returns:
-        Path to the dataset directory
-    """
-    video_path = video_path or Config.FULL_MATCH_VIDEO
-    output_dir = output_dir or Config.PROJECT_ROOT / "dataset"
-
-    images_dir = output_dir / "images" / "train"
-    labels_dir = output_dir / "labels" / "train"
-    images_dir.mkdir(parents=True, exist_ok=True)
-    labels_dir.mkdir(parents=True, exist_ok=True)
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video: {video_path}")
-
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    n_frames = min(max_frames, total)
-    # Compute evenly spaced frame indices across the whole video
-    frame_indices = np.linspace(0, total - 1, n_frames, dtype=int)
-
-    print(f"Extracting {n_frames} frames evenly across {video_path.name}")
-    print(f"  Total video frames: {total}")
-    print(f"  Interval: ~every {total // n_frames} frames")
-
-    saved = 0
-    for frame_idx in frame_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
-        ret, frame = cap.read()
-        if not ret:
-            continue
-
-        filename = f"frame_{int(frame_idx):06d}.jpg"
-        cv2.imwrite(str(images_dir / filename), frame)
-        saved += 1
-
-    cap.release()
-    print(f"  Extracted {saved} frames → {images_dir}")
-    return output_dir
-
-
-# YOLO custom class mapping — 2-class model
-# Role assignment (team A/B, goalkeeper, referee) is handled in post-processing.
-CUSTOM_CLASSES = {
-    0: "person",
-    1: "ball",
-}
-
-
-def pre_annotate(
-    dataset_dir: Path = None,
-    detector: PlayerDetector = None,
-) -> int:
-    """
-    Pre-annotate extracted frames using current YOLO model.
-
-    Generates YOLO-format .txt label files as a starting point.
-    You then review and correct these in a labeling tool.
-
-    YOLO format per line: class_id x_center y_center width height
-    (all values normalized to 0-1)
-
-    Returns:
-        Number of frames annotated
-    """
-    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "dataset"
-    images_dir = dataset_dir / "images" / "train"
-    labels_dir = dataset_dir / "labels" / "train"
-    labels_dir.mkdir(parents=True, exist_ok=True)
-
-    if detector is None:
-        detector = PlayerDetector()
-
-    image_files = sorted(images_dir.glob("*.jpg"))
-    if not image_files:
-        print("No images found. Run extract_dataset_frames() first.")
-        return 0
-
-    print(f"Pre-annotating {len(image_files)} images...")
-    total_players = 0
-    total_balls = 0
-
-    for img_path in image_files:
-        frame = cv2.imread(str(img_path))
-        h, w = frame.shape[:2]
-
-        detections = detector.detect(frame)
-
-        label_path = labels_dir / img_path.with_suffix(".txt").name
-        lines = []
-
-        for p in detections["players"]:
-            x1, y1, x2, y2 = p["bbox"]
-            x_center = ((x1 + x2) / 2) / w
-            y_center = ((y1 + y2) / 2) / h
-            bw = (x2 - x1) / w
-            bh = (y2 - y1) / h
-            # Class 0 = player
-            lines.append(f"0 {x_center:.6f} {y_center:.6f} {bw:.6f} {bh:.6f}")
-            total_players += 1
-
-        for b in detections["ball"]:
-            x1, y1, x2, y2 = b["bbox"]
-            x_center = ((x1 + x2) / 2) / w
-            y_center = ((y1 + y2) / 2) / h
-            bw = (x2 - x1) / w
-            bh = (y2 - y1) / h
-            # Class 1 = ball
-            lines.append(f"1 {x_center:.6f} {y_center:.6f} {bw:.6f} {bh:.6f}")
-            total_balls += 1
-
-        label_path.write_text("\n".join(lines))
-
-    print(f"  Pre-annotated: {total_players} players, {total_balls} balls")
-    print(f"  Labels saved → {labels_dir}")
-    return len(image_files)
-
-
-def export_cvat_zip(dataset_dir: Path = None) -> Path:
-    """
-    Package pre-annotations into a zip that CVAT can import (YOLO 1.1 format).
-
-    CVAT requires:
-      - obj.data    (class count + names file reference)
-      - obj.names   (one class name per line)
-      - train.txt   (list of image filenames)
-      - obj_train_data/  (all .txt label files)
-    """
-    import zipfile
-
-    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "dataset"
-    labels_dir = dataset_dir / "labels" / "train"
-    images_dir = dataset_dir / "images" / "train"
-    zip_path = dataset_dir / "cvat_annotations.zip"
-
-    label_files = sorted(labels_dir.glob("*.txt"))
-    image_files = sorted(images_dir.glob("*.jpg"))
-
-    class_names = ["person", "ball"]
-
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        # obj.names — one class per line
-        obj_names = "\n".join(class_names)
-        zf.writestr("obj.names", obj_names)
-
-        # obj.data
-        obj_data = f"classes = {len(class_names)}\nnames = obj.names\ntrain = train.txt\n"
-        zf.writestr("obj.data", obj_data)
-
-        # train.txt — list of image filenames
-        train_txt = "\n".join(f"obj_train_data/{img.name}" for img in image_files)
-        zf.writestr("train.txt", train_txt)
-
-        # Label files inside obj_train_data/
-        for lbl in label_files:
-            zf.write(lbl, f"obj_train_data/{lbl.name}")
-
-    print(f"CVAT zip created: {zip_path}")
-    print(f"  {len(label_files)} label files, {len(class_names)} classes")
-    print(f"  Upload this in CVAT → Menu → Upload annotations → YOLO 1.1")
-    return zip_path
+CLASSES = {0: "person", 1: "ball"}
 
 
 def create_data_yaml(dataset_dir: Path = None) -> Path:
@@ -247,10 +74,7 @@ def split_val(dataset_dir: Path = None, val_ratio: float = 0.2):
 
 
 def visualize_labels(dataset_dir: Path = None, n_samples: int = 6):
-    """
-    Show a grid of images with their YOLO label boxes overlaid.
-    Useful for verifying pre-annotations before manual review.
-    """
+    """Show a grid of images with their YOLO label boxes overlaid."""
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
 
@@ -263,12 +87,10 @@ def visualize_labels(dataset_dir: Path = None, n_samples: int = 6):
         print("No images found.")
         return
 
-    # Evenly sample across the dataset
     step = max(1, len(image_files) // n_samples)
     samples = image_files[::step][:n_samples]
 
-    colors = {0: "lime", 1: "cyan", 2: "orange", 3: "gray"}
-    class_names = CUSTOM_CLASSES
+    colors = {0: "lime", 1: "cyan"}
 
     cols = min(3, len(samples))
     rows = (len(samples) + cols - 1) // cols
@@ -295,7 +117,6 @@ def visualize_labels(dataset_dir: Path = None, n_samples: int = 6):
                 cls_id = int(parts[0])
                 xc, yc, bw, bh = map(float, parts[1:])
 
-                # Convert normalized to pixel coords
                 x1 = (xc - bw / 2) * w
                 y1 = (yc - bh / 2) * h
                 box_w = bw * w
@@ -308,22 +129,14 @@ def visualize_labels(dataset_dir: Path = None, n_samples: int = 6):
                 )
                 axes[i].add_patch(rect)
                 axes[i].text(
-                    x1, y1 - 3, class_names.get(cls_id, f"cls{cls_id}"),
+                    x1, y1 - 3, CLASSES.get(cls_id, f"cls{cls_id}"),
                     color=color, fontsize=8, fontweight="bold",
                     bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.6),
                 )
 
-    # Hide unused axes
     for j in range(len(samples), len(axes)):
         axes[j].axis("off")
 
-    plt.tight_layout()
-    plt.show()
-
-    # Hide unused axes
-    for j in range(len(samples), len(axes)):
-        axes[j].axis("off")
-
-    plt.suptitle("Pre-annotations — Review these for correctness", fontsize=14)
+    plt.suptitle("Dataset labels — verify annotations", fontsize=14)
     plt.tight_layout()
     plt.show()

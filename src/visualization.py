@@ -111,7 +111,7 @@ class Annotator:
         annotated = frame.copy()
 
         for p in detections["players"]:
-            team_id = p.get("team_id", 2)
+            team_id = p.get("team_id", 0)
             track_id = p.get("track_id", -1)
             self.draw_player_ellipse(annotated, p["bbox"], team_id, track_id)
 

@@ -75,7 +75,6 @@ class Config:
     TEAM_COLORS = {
         0: (255, 50, 50),       # Team A — blue (BGR)
         1: (0, 220, 255),       # Team B — yellow (BGR)
-        2: (180, 180, 180),     # Referee — gray
     }
     BALL_COLOR = (0, 200, 0)    # Green (BGR)
     ELLIPSE_THICKNESS = 2
