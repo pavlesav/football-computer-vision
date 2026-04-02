@@ -32,11 +32,18 @@ names:
     return yaml_path
 
 
-def split_val(dataset_dir: Path = None, val_ratio: float = 0.2):
+VAL_MATCHES = ["mla-bud-2", "jed-ars", "pet-mor"]
+
+
+def split_val(dataset_dir: Path = None, val_matches: list = None):
     """
-    Split images+labels into train/val. Safe to call multiple times —
+    Match-level train/val split. Safe to call multiple times —
     always merges everything back into train first, then re-splits.
+
+    Frames whose filename starts with a val match slug go to val,
+    everything else goes to train.
     """
+    val_matches = val_matches or VAL_MATCHES
     dataset_dir = dataset_dir or Config.PROJECT_ROOT / "dataset"
     train_imgs = dataset_dir / "images" / "train"
     train_lbls = dataset_dir / "labels" / "train"
@@ -52,25 +59,28 @@ def split_val(dataset_dir: Path = None, val_ratio: float = 0.2):
         shutil.move(str(lbl), str(train_lbls / lbl.name))
 
     all_images = sorted(train_imgs.glob("*.jpg"))
-    n_val = max(1, int(len(all_images) * val_ratio))
 
-    # Deterministic shuffle
-    rng = np.random.RandomState(42)
-    indices = rng.permutation(len(all_images))
-    val_indices = indices[:n_val]
+    # Sort val slugs longest-first so "mla-bud-2" matches before "mla-bud"
+    sorted_slugs = sorted(val_matches, key=len, reverse=True)
+
+    def is_val(filename):
+        for slug in sorted_slugs:
+            if filename.startswith(slug + "_frame_"):
+                return True
+        return False
 
     moved = 0
-    for idx in val_indices:
-        img = all_images[idx]
-        lbl = train_lbls / img.with_suffix(".txt").name
-
-        shutil.move(str(img), str(val_imgs / img.name))
-        if lbl.exists():
-            shutil.move(str(lbl), str(val_lbls / lbl.name))
-        moved += 1
+    for img in all_images:
+        if is_val(img.name):
+            lbl = train_lbls / img.with_suffix(".txt").name
+            shutil.move(str(img), str(val_imgs / img.name))
+            if lbl.exists():
+                shutil.move(str(lbl), str(val_lbls / lbl.name))
+            moved += 1
 
     total = len(all_images)
-    print(f"Split: {total - moved} train, {moved} val (from {total} total, {val_ratio:.0%} split)")
+    print(f"Split: {total - moved} train, {moved} val (from {total} total)")
+    print(f"Val matches: {', '.join(val_matches)}")
 
 
 def visualize_labels(dataset_dir: Path = None, n_samples: int = 6):
