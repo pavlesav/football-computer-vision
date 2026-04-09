@@ -14,6 +14,26 @@ class Config:
     GAME_START_SEC = 4 * 60 + 38        # 04:38
     CLIP_DURATION_SEC = 5 * 60           # 5 minutes
 
+    # --- Match videos (all 16 annotated matches) ---
+    MATCH_VIDEOS = {
+        "ars-dec":   VIDEOS_DIR / "ARSENAL - DECIC 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+        "bok-jed":   VIDEOS_DIR / "BOKELJ - JEDINSTVO 1.CFL 22.KOLO 01.03.2026. CIJELA UTAKMICA.mp4",
+        "bud-sut":   VIDEOS_DIR / "BUDUCNOST - SUTJESKA 1.CFL 20.KOLO 21.02.2026. CIJELA UTAKMICA.mp4",
+        "jez-jed":   VIDEOS_DIR / "JEZERO - JEDINSTVO 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+        "pet-mor":   VIDEOS_DIR / "PETROVAC - MORNAR 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+        "sut-mla":   VIDEOS_DIR / "SUTJESKA - MLADOST 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+        "bok-jed-2": VIDEOS_DIR / "BOKELJ-JEDINSTVO 1.CFL 4.KOLO 24.08.2025 CIJELA.mp4",
+        "dec-mla":   VIDEOS_DIR / "DECIC-MLADOST DG 1.CFL 1.KOLO 04.08.2025 CIJELA.mp4",
+        "jed-ars":   VIDEOS_DIR / "JEDINSTVO-ARSENAL 1.CFL 10.KOLO 01.10.2025 CIJELA.mp4",
+        "jez-ars":   VIDEOS_DIR / "JEZERO-ARSENAL 1.CFL 14.KOLO 02.11.2025 CIJELA.mp4",
+        "mla-bud":   VIDEOS_DIR / "MLADOST DG - BUDUCNOST 1.CFL 23. KOLO 07.03.2026. CIJELA UTAKMICA.mp4",
+        "mla-bud-2": VIDEOS_DIR / "MLADOST DG-BUDUCNOST 1.CFL 5.KOLO 31.08.2025. CIJELA.mp4",
+        "mor-ars":   VIDEOS_DIR / "MORNAR-ARSENAL 1.CFL 2.KOLO 10.08.2025. CIJELA.mp4",
+        "mor-bud":   VIDEOS_DIR / "MORNAR-BUDUCNOST 1.CFL 7.KOLO 17.09.2025 CIJELA.mp4",
+        "pet-bok":   VIDEOS_DIR / "PETROVAC-BOKELJ 1.CFL 19.KOLO 10.12.2025 CIJELA.mp4",
+        "sut-pet":   VIDEOS_DIR / "SUTJESKA-PETROVAC 1.CFL 3.KOLO 17.08.2025 CIJELA.mp4",
+    }
+
     # --- YOLO Detection ---
     YOLO_MODEL = None
     YOLO_SEG_MODEL = "yolov8n-seg.pt"  # segmentation model for team classification
@@ -34,6 +54,7 @@ class Config:
     TEAM_COLORS = {
         0: (255, 50, 50),       # Team A — blue (BGR)
         1: (0, 220, 255),       # Team B — yellow (BGR)
+        2: (180, 180, 180),     # Other — gray (ref/GK/staff)
     }
     BALL_COLOR = (0, 200, 0)    # Green (BGR)
     ELLIPSE_THICKNESS = 2

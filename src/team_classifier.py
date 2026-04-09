@@ -30,15 +30,18 @@ class TeamClassifier:
 
     TEAM_A = 0
     TEAM_B = 1
+    TEAM_OTHER = 2    # referee, GK, staff
 
     def __init__(self):
         self.gmm = None
         self.pca = None
         self._fitted = False
+        self._supervised = False
+        self._centroids = {}       # class_id → centroid in PCA space
         self.cluster_to_team = {}  # gmm cluster index → TEAM_A / TEAM_B
         self.seg_model = YOLO(Config.YOLO_SEG_MODEL)
         self._device = self._resolve_device()
-        print(f"TeamClassifier: ResNet18 CNN embeddings ({_CNN_DIM}→{_PCA_DIM}-dim PCA, k=2 GMM)")
+        print(f"TeamClassifier: ResNet18 CNN embeddings ({_CNN_DIM}→{_PCA_DIM}-dim PCA)")
 
     @staticmethod
     def _resolve_device():
@@ -96,75 +99,116 @@ class TeamClassifier:
             return []
         return list(self.extract_embeddings_batch(frame, bboxes))
 
-    def fit(self, all_embeddings: np.ndarray, outlier_percentile: float = 5.0):
+    def fit(self, all_embeddings: np.ndarray):
         """
-        PCA + two-pass GMM fit.
+        Unsupervised PCA + GMM fit (used by cluster visualization).
 
-        1. PCA from 512 → 32 dims (removes noise, makes GMM stable).
-        2. Pass 1: rough k=2 GMM on all data.
-        3. Pass 2: remove bottom ``outlier_percentile`` by membership
-           probability, re-fit for tighter centroids.
+        1. PCA from 512 → 32 dims.
+        2. k=2 GMM on all data.
         """
-        # Drop zero vectors (failed crops)
         valid = np.linalg.norm(all_embeddings, axis=1) > 0
         embeddings = all_embeddings[valid]
         n_total = len(embeddings)
 
-        # ── PCA ───────────────────────────────────────────────────────────
         n_components = min(_PCA_DIM, embeddings.shape[0], embeddings.shape[1])
         self.pca = PCA(n_components=n_components, random_state=42)
         reduced = self.pca.fit_transform(embeddings)
         variance_kept = self.pca.explained_variance_ratio_.sum()
 
-        gmm_kwargs = dict(
+        self.gmm = GaussianMixture(
             n_components=2,
             covariance_type="full",
             n_init=10,
             max_iter=300,
             random_state=42,
         )
-
-        # ── Pass 1: rough fit ─────────────────────────────────────────────
-        rough_gmm = GaussianMixture(**gmm_kwargs)
-        rough_gmm.fit(reduced)
-
-        probs = rough_gmm.predict_proba(reduced)
-        max_probs = probs.max(axis=1)
-        threshold = np.percentile(max_probs, outlier_percentile)
-        inlier_mask = max_probs >= threshold
-        n_removed = int((~inlier_mask).sum())
-
-        # ── Pass 2: re-fit on inliers only ─────────────────────────────────
-        clean = reduced[inlier_mask]
-
-        self.gmm = GaussianMixture(**gmm_kwargs)
-        self.gmm.fit(clean)
+        self.gmm.fit(reduced)
         self._fitted = True
 
         # Assign team IDs: larger cluster → Team A
-        labels = self.gmm.predict(clean)
+        labels = self.gmm.predict(reduced)
         counter = Counter(labels)
         (big_cluster, big_n), (small_cluster, small_n) = counter.most_common()
         self.cluster_to_team = {big_cluster: self.TEAM_A, small_cluster: self.TEAM_B}
 
-        print(f"Team classification fitted on {n_total} samples "
-              f"({_CNN_DIM}→{n_components}-dim PCA, {variance_kept:.1%} variance)")
-        print(f"  Outliers removed: {n_removed} ({n_removed/n_total:.1%}) — "
-              f"GK/ref/staff (bottom {outlier_percentile:.0f}% membership probability)")
-        print(f"  GMM weights  : Team A={self.gmm.weights_[big_cluster]:.1%}, "
-              f"Team B={self.gmm.weights_[small_cluster]:.1%}")
+        print(f"GMM fitted on {n_total} samples "
+              f"({_CNN_DIM}\u2192{n_components}-dim PCA, {variance_kept:.1%} variance)")
         print(f"  Cluster sizes: Team A={big_n}, Team B={small_n}")
+
+    def fit_supervised(self, embeddings: np.ndarray, labels: list):
+        """
+        Fit from user-labeled examples using nearest-centroid in PCA space.
+
+        Args:
+            embeddings: (N, 512) array — all embeddings from labeled tracks.
+            labels: length-N list of ints (0=Team A, 1=Team B, 2=Other).
+        """
+        labels = np.array(labels)
+        valid = np.linalg.norm(embeddings, axis=1) > 0
+        embeddings = embeddings[valid]
+        labels = labels[valid]
+
+        n_components = min(_PCA_DIM, embeddings.shape[0], embeddings.shape[1])
+        self.pca = PCA(n_components=n_components, random_state=42)
+        reduced = self.pca.fit_transform(embeddings)
+        variance = self.pca.explained_variance_ratio_.sum()
+
+        self._centroids = {}
+        class_names = {0: 'Team A', 1: 'Team B', 2: 'Other'}
+        for cls in np.unique(labels):
+            mask = labels == cls
+            self._centroids[int(cls)] = reduced[mask].mean(axis=0)
+
+        self._supervised = True
+        self._fitted = True
+
+        parts = [f"{class_names.get(int(c), f'cls{c}')}={int((labels==c).sum())}"
+                 for c in sorted(self._centroids)]
+        print(f"Supervised fit: {len(embeddings)} embeddings, "
+              f"{n_components}-dim PCA ({variance:.1%} variance)")
+        print(f"  Classes: {', '.join(parts)}")
 
     def predict(self, embedding: np.ndarray) -> int:
         """Predict team ID for a single CNN embedding."""
         if not self._fitted:
-            raise RuntimeError("TeamClassifier not fitted yet. Call fit() first.")
+            raise RuntimeError("TeamClassifier not fitted yet.")
         if np.linalg.norm(embedding) == 0:
             return self.TEAM_A
         reduced = self.pca.transform(embedding.reshape(1, -1))
+        if self._supervised:
+            r = reduced[0]
+            return min(self._centroids,
+                       key=lambda c: np.linalg.norm(r - self._centroids[c]))
         probs = self.gmm.predict_proba(reduced)[0]
         cluster = int(probs.argmax())
         return self.cluster_to_team[cluster]
+
+    def classify_tracks(self, track_embeddings: dict) -> dict:
+        """
+        Classify each track by its mean embedding — one decision per player.
+
+        Averaging over many frames cancels out pose/lighting noise, giving
+        a much more stable team assignment than per-frame classification.
+
+        Args:
+            track_embeddings: ``{track_id: [array(512,), ...]}``
+
+        Returns:
+            ``{track_id: team_id}``
+        """
+        if not self._fitted:
+            raise RuntimeError("TeamClassifier not fitted yet. Call fit() first.")
+
+        track_teams = {}
+        for track_id, embs in track_embeddings.items():
+            valid = [e for e in embs if np.linalg.norm(e) > 0]
+            if not valid:
+                track_teams[track_id] = self.TEAM_A
+                continue
+            mean_emb = np.mean(valid, axis=0).astype(np.float32)
+            track_teams[track_id] = self.predict(mean_emb)
+
+        return track_teams
 
     # ------------------------------------------------------------------
     # Per-frame classification
