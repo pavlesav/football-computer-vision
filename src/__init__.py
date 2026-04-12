@@ -12,6 +12,15 @@ def __getattr__(name):
         "TeamClassifier": ".team_classifier",
         "Tracker": ".tracking",
         "Annotator": ".visualization",
+        "analyze_broadcast": ".broadcast",
+        "detect_cuts": ".broadcast",
+        "build_segments": ".broadcast",
+        "check_scoreboard": ".broadcast",
+        "find_game_periods": ".broadcast",
+        "detect_period_starts": ".broadcast",
+        "read_clock_seconds": ".broadcast",
+        "validate_period_starts": ".broadcast",
+        "estimate_homography": ".homography",
     }
     if name in _lazy:
         import importlib

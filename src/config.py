@@ -47,6 +47,18 @@ class Config:
     # --- Team Classification (ResNet18 embeddings) ---
     N_TEAMS = 2
 
+    # --- Broadcast Analysis ---
+    # Scoreboard ROI (x1, y1, x2, y2) for 1920x1080 1.CFL broadcasts.
+    # Covers the top-left scoreboard bar (clock, team names, score).
+    SCOREBOARD_ROI = (40, 44, 520, 88)
+    # Wide search region (x1, y1, x2, y2) where the match clock may appear.
+    # Covers all three 1.CFL scoreboard layouts we've seen:
+    #   - Layout A: clock on the left, y=44-88  (bud-sut, pet-mor)
+    #   - Layout B: clock on the right, y=44-88 (ars-dec, jed-ars, mla-bud)
+    #   - Layout C: scoreboard ~40px lower      (jez-jed)
+    # easyocr runs over this whole region and finds any MM:SS-like text.
+    CLOCK_SEARCH_ROI = (30, 30, 650, 140)
+
     # --- Tracking ---
     TRACKER_TYPE = "botsort"
 

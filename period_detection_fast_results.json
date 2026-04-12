@@ -1,0 +1,292 @@
+[
+  {
+    "status": "ok",
+    "slug": "ars-dec",
+    "file": "ARSENAL - DECIC 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+    "fps": 25.0,
+    "total_frames": 148698,
+    "total_minutes": 99.1,
+    "first_half_start_frame": 11901,
+    "first_half_start": "07:56",
+    "second_half_start_frame": 74859,
+    "second_half_start": "49:54",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "gap between halves = 42.0 min (expected 45-75)"
+      ]
+    },
+    "elapsed_sec": 7.2
+  },
+  {
+    "status": "ok",
+    "slug": "bok-jed",
+    "file": "BOKELJ - JEDINSTVO 1.CFL 22.KOLO 01.03.2026. CIJELA UTAKMICA.mp4",
+    "fps": 25.0,
+    "total_frames": 168671,
+    "total_minutes": 112.4,
+    "first_half_start_frame": 2864,
+    "first_half_start": "01:54",
+    "second_half_start_frame": 94059,
+    "second_half_start": "1:02:42",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.6
+  },
+  {
+    "status": "ok",
+    "slug": "bud-sut",
+    "file": "BUDUCNOST - SUTJESKA 1.CFL 20.KOLO 21.02.2026. CIJELA UTAKMICA.mp4",
+    "fps": 25.0,
+    "total_frames": 169725,
+    "total_minutes": 113.2,
+    "first_half_start_frame": 6983,
+    "first_half_start": "04:39",
+    "second_half_start_frame": 89095,
+    "second_half_start": "59:23",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.7
+  },
+  {
+    "status": "ok",
+    "slug": "jez-jed",
+    "file": "JEZERO - JEDINSTVO 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+    "fps": 25.0,
+    "total_frames": 160486,
+    "total_minutes": 107.0,
+    "first_half_start_frame": 7371,
+    "first_half_start": "04:54",
+    "second_half_start_frame": 79718,
+    "second_half_start": "53:08",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.8
+  },
+  {
+    "status": "ok",
+    "slug": "pet-mor",
+    "file": "PETROVAC - MORNAR 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+    "fps": 25.0,
+    "total_frames": 163674,
+    "total_minutes": 109.1,
+    "first_half_start_frame": 11008,
+    "first_half_start": "07:20",
+    "second_half_start_frame": 87280,
+    "second_half_start": "58:11",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.6
+  },
+  {
+    "status": "ok",
+    "slug": "sut-mla",
+    "file": "SUTJESKA - MLADOST 1.CFL 21.03.2026. CIJELA UTAKMICA.mp4",
+    "fps": 25.0,
+    "total_frames": 156112,
+    "total_minutes": 104.1,
+    "first_half_start_frame": 3458,
+    "first_half_start": "02:18",
+    "second_half_start_frame": 81604,
+    "second_half_start": "54:24",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.7
+  },
+  {
+    "status": "ok",
+    "slug": "bok-jed-2",
+    "file": "BOKELJ-JEDINSTVO 1.CFL 4.KOLO 24.08.2025 CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 148756,
+    "total_minutes": 99.2,
+    "first_half_start_frame": 3266,
+    "first_half_start": "02:10",
+    "second_half_start_frame": 74745,
+    "second_half_start": "49:49",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.7
+  },
+  {
+    "status": "ok",
+    "slug": "dec-mla",
+    "file": "DECIC-MLADOST DG 1.CFL 1.KOLO 04.08.2025 CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 150573,
+    "total_minutes": 100.4,
+    "first_half_start_frame": 3842,
+    "first_half_start": "02:33",
+    "second_half_start_frame": 75471,
+    "second_half_start": "50:18",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.8
+  },
+  {
+    "status": "ok",
+    "slug": "jed-ars",
+    "file": "JEDINSTVO-ARSENAL 1.CFL 10.KOLO 01.10.2025 CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 152342,
+    "total_minutes": 101.6,
+    "first_half_start_frame": 3465,
+    "first_half_start": "02:18",
+    "second_half_start_frame": 75064,
+    "second_half_start": "50:02",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.8
+  },
+  {
+    "status": "ok",
+    "slug": "jez-ars",
+    "file": "JEZERO-ARSENAL 1.CFL 14.KOLO 02.11.2025 CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 151743,
+    "total_minutes": 101.2,
+    "first_half_start_frame": 3525,
+    "first_half_start": "02:21",
+    "second_half_start_frame": 76469,
+    "second_half_start": "50:58",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.7
+  },
+  {
+    "status": "ok",
+    "slug": "mla-bud",
+    "file": "MLADOST DG - BUDUCNOST 1.CFL 23. KOLO 07.03.2026. CIJELA UTAKMICA.mp4",
+    "fps": 25.0,
+    "total_frames": 151131,
+    "total_minutes": 100.8,
+    "first_half_start_frame": 3501,
+    "first_half_start": "02:20",
+    "second_half_start_frame": 75662,
+    "second_half_start": "50:26",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.7
+  },
+  {
+    "status": "ok",
+    "slug": "mla-bud-2",
+    "file": "MLADOST DG-BUDUCNOST 1.CFL 5.KOLO 31.08.2025. CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 167151,
+    "total_minutes": 111.4,
+    "first_half_start_frame": 7335,
+    "first_half_start": "04:53",
+    "second_half_start_frame": 84205,
+    "second_half_start": "56:08",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.4
+  },
+  {
+    "status": "ok",
+    "slug": "mor-ars",
+    "file": "MORNAR-ARSENAL 1.CFL 2.KOLO 10.08.2025. CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 155946,
+    "total_minutes": 104.0,
+    "first_half_start_frame": 3835,
+    "first_half_start": "02:33",
+    "second_half_start_frame": 79220,
+    "second_half_start": "52:48",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.6
+  },
+  {
+    "status": "ok",
+    "slug": "mor-bud",
+    "file": "MORNAR-BUDUCNOST 1.CFL 7.KOLO 17.09.2025 CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 156636,
+    "total_minutes": 104.4,
+    "first_half_start_frame": 6174,
+    "first_half_start": "04:06",
+    "second_half_start_frame": 79737,
+    "second_half_start": "53:09",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.5
+  },
+  {
+    "status": "ok",
+    "slug": "pet-bok",
+    "file": "PETROVAC-BOKELJ 1.CFL 19.KOLO 10.12.2025 CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 149779,
+    "total_minutes": 99.9,
+    "first_half_start_frame": 4477,
+    "first_half_start": "02:59",
+    "second_half_start_frame": 75651,
+    "second_half_start": "50:26",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.7
+  },
+  {
+    "status": "ok",
+    "slug": "sut-pet",
+    "file": "SUTJESKA-PETROVAC 1.CFL 3.KOLO 17.08.2025 CIJELA.mp4",
+    "fps": 25.0,
+    "total_frames": 157514,
+    "total_minutes": 105.0,
+    "first_half_start_frame": 6031,
+    "first_half_start": "04:01",
+    "second_half_start_frame": 80154,
+    "second_half_start": "53:26",
+    "validation": {
+      "ok": true,
+      "errors": [],
+      "warnings": []
+    },
+    "elapsed_sec": 3.3
+  }
+]
