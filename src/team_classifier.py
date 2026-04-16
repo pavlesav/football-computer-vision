@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import KNeighborsClassifier
 from collections import Counter
 from ultralytics import YOLO
 
@@ -37,7 +38,8 @@ class TeamClassifier:
         self.pca = None
         self._fitted = False
         self._supervised = False
-        self._centroids = {}       # class_id → centroid in PCA space
+        self._centroids = {}       # class_id → centroid in PCA space (kept for centroid distance diagnostics)
+        self._knn = None           # KNeighborsClassifier fitted in supervised mode
         self.cluster_to_team = {}  # gmm cluster index → TEAM_A / TEAM_B
         self.seg_model = YOLO(Config.YOLO_SEG_MODEL)
         self._device = self._resolve_device()
@@ -137,7 +139,7 @@ class TeamClassifier:
 
     def fit_supervised(self, embeddings: np.ndarray, labels: list):
         """
-        Fit from user-labeled examples using nearest-centroid in PCA space.
+        Fit from user-labeled examples using KNN (k=5) in PCA space.
 
         Args:
             embeddings: (N, 512) array — all embeddings from labeled tracks.
@@ -159,6 +161,9 @@ class TeamClassifier:
             mask = labels == cls
             self._centroids[int(cls)] = reduced[mask].mean(axis=0)
 
+        self._knn = KNeighborsClassifier(n_neighbors=5, metric='euclidean')
+        self._knn.fit(reduced, labels)
+
         self._supervised = True
         self._fitted = True
 
@@ -176,6 +181,9 @@ class TeamClassifier:
             return self.TEAM_A
         reduced = self.pca.transform(embedding.reshape(1, -1))
         if self._supervised:
+            if self._knn is not None:
+                return int(self._knn.predict(reduced)[0])
+            # fallback for classifiers saved before KNN migration
             r = reduced[0]
             return min(self._centroids,
                        key=lambda c: np.linalg.norm(r - self._centroids[c]))
@@ -185,10 +193,12 @@ class TeamClassifier:
 
     def classify_tracks(self, track_embeddings: dict) -> dict:
         """
-        Classify each track by its mean embedding — one decision per player.
+        Classify each track by majority vote over per-embedding predictions.
 
-        Averaging over many frames cancels out pose/lighting noise, giving
-        a much more stable team assignment than per-frame classification.
+        Each sampled embedding casts one vote. The majority label wins.
+        This is more robust than a single prediction on the median embedding:
+        a brief ID swap or a handful of noisy frames get outvoted by the
+        embeddings from the dominant player on that track.
 
         Args:
             track_embeddings: ``{track_id: [array(512,), ...]}``
@@ -205,10 +215,78 @@ class TeamClassifier:
             if not valid:
                 track_teams[track_id] = self.TEAM_A
                 continue
-            mean_emb = np.mean(valid, axis=0).astype(np.float32)
-            track_teams[track_id] = self.predict(mean_emb)
+            votes = [self.predict(e.astype(np.float32)) for e in valid]
+            track_teams[track_id] = Counter(votes).most_common(1)[0][0]
 
         return track_teams
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, path) -> None:
+        """Save the fitted classifier state to disk (excludes YOLO seg model)."""
+        import joblib
+        if not self._fitted:
+            raise RuntimeError("Classifier has not been fitted yet.")
+        state = {
+            "pca":             self.pca,
+            "gmm":             self.gmm,
+            "_centroids":      self._centroids,
+            "_knn":            getattr(self, '_knn', None),
+            "_fitted":         self._fitted,
+            "_supervised":     self._supervised,
+            "cluster_to_team": self.cluster_to_team,
+        }
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(state, path)
+        print(f"Classifier saved: {path}")
+
+    @classmethod
+    def load(cls, path) -> "TeamClassifier":
+        """Load a saved classifier. YOLO seg model is re-initialised from disk."""
+        import joblib
+        obj = cls()
+        state = joblib.load(path)
+        for k, v in state.items():
+            setattr(obj, k, v)
+        mode = "supervised" if obj._supervised else "unsupervised"
+        print(f"Classifier loaded ({mode}): {path}")
+        return obj
+
+    @classmethod
+    def refit_knn(cls, pkl_path, labels_path,
+                  n_neighbors: int = 5) -> "TeamClassifier":
+        """Refit the KNN from saved label data, preserving the PCA transform.
+
+        Use this to change K or switch classifiers without re-labeling or
+        re-running Pass 1.
+
+        Args:
+            pkl_path:     Path to the existing ``{slug}_classifier.pkl``.
+            labels_path:  Path to ``{slug}_labels.npz`` (keys: embeddings, labels).
+            n_neighbors:  K for KNN (default 5).
+        """
+        obj = cls.load(pkl_path)
+        data = np.load(labels_path)
+        embeddings, labels = data["embeddings"], data["labels"]
+
+        valid = np.linalg.norm(embeddings, axis=1) > 0
+        embeddings, labels = embeddings[valid], labels[valid]
+
+        reduced = obj.pca.transform(embeddings)
+        obj._knn = KNeighborsClassifier(n_neighbors=n_neighbors, metric="euclidean")
+        obj._knn.fit(reduced, labels)
+        obj._supervised = True
+        obj._fitted = True
+
+        from pathlib import Path
+        class_names = {0: "Team A", 1: "Team B", 2: "Other"}
+        parts = [f"{class_names.get(int(c), f'cls{c}')}={int((labels == c).sum())}"
+                 for c in np.unique(labels)]
+        print(f"KNN(k={n_neighbors}) refit from {Path(labels_path).name}: {', '.join(parts)}")
+        return obj
 
     # ------------------------------------------------------------------
     # Per-frame classification

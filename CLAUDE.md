@@ -18,72 +18,97 @@ Semi-automated event data extraction from broadcast football (soccer) footage fr
 - **BoT-SORT** - multi-object tracking via Ultralytics' built-in tracker
 - **YOLOv8n-seg** - instance segmentation to mask player silhouettes (background removal)
 - **ResNet18** (frozen ImageNet backbone) - 512-dim CNN embeddings from masked player crops
-- **PCA + GMM** (scikit-learn) - dimensionality reduction (512->32) then 2-component Gaussian Mixture Model for team clustering
+- **PCA + KNN** (scikit-learn) - dimensionality reduction (512->32) then KNN (k=5) for supervised team classification; GMM is still available for unsupervised exploration
 - **easyocr** - match clock reading for period detection
+- **PnLCalib** (HRNetV2-W48) - pretrained pitch keypoint + line detection for camera calibration (3x4 projection matrix)
 - **OpenCV** - video I/O, image processing, homography estimation
 
 ## Project Structure
 
 ```
 football-computer-vision/
-├── main.ipynb                 # Main pipeline: detection, tracking, team classification, export
-├── model_fine_tuning.ipynb    # YOLO training + error analysis
-├── src/
-│   ├── __init__.py            # Lazy imports for all modules
-│   ├── config.py              # All paths, thresholds, hyperparameters
-│   ├── detection.py           # PlayerDetector (YOLO), BallInterpolator
-│   ├── segmentation.py        # YOLOv8-seg masks, ResNet18 CNN embeddings
-│   ├── team_classifier.py     # TeamClassifier: PCA + GMM clustering
-│   ├── tracking.py            # Tracker: track-level team assignment
-│   ├── broadcast.py           # Camera cut detection, period detection via clock OCR
-│   ├── homography.py          # Pitch line detection, homography estimation
-│   ├── visualization.py       # Annotator: ellipses, triangles, bboxes
-│   ├── video_utils.py         # Video I/O, clip extraction (ffmpeg)
-│   └── dataset.py             # Dataset management, train/val split
-├── dataset/
-│   ├── data.yaml              # YOLO dataset config (2 classes)
-│   ├── images/{all,train,val}/  # 971 annotated frames
-│   ├── labels/{all,train,val}/  # YOLO-format labels (class cx cy w h)
-│   └── cvat_exports/          # Archived CVAT annotation exports
-├── runs/detect/               # YOLO training outputs (weights, curves)
-├── videos/                    # Source match videos (gitignored)
-├── output/                    # Annotated output videos (gitignored)
-├── period_detection_fast_results.json  # Cached period boundaries for all 16 matches
+├── src/                               # All Python source code
+│   ├── __init__.py                    # Lazy imports for all modules
+│   ├── config.py                      # All paths, thresholds, hyperparameters
+│   ├── detection.py                   # PlayerDetector (YOLO), BallInterpolator
+│   ├── segmentation.py                # YOLOv8-seg masks, ResNet18 CNN embeddings
+│   ├── team_classifier.py             # TeamClassifier: PCA + KNN (k=5) supervised classification
+│   ├── tracking.py                    # Tracker: track-level team assignment
+│   ├── broadcast.py                   # Camera cut detection, period detection via clock OCR
+│   ├── camera_motion.py               # Optical-flow tracker: propagates homography across PnLCalib dropouts
+│   ├── manual_calibration.py          # Pitch-keypoint labeling UI + saved homography seeds for Tier-3 matches
+│   ├── homography.py                  # Classical pitch line detection (legacy, not primary)
+│   ├── visualization.py               # Annotator: ellipses, triangles, bboxes
+│   ├── video_utils.py                 # Video I/O, clip extraction (ffmpeg)
+│   ├── dataset.py                     # Training data management, train/val split
+│   └── run_pnlcalib_video.py          # PnLCalib homography on video clips
+├── models/                            # All models and weights
+│   ├── detection/                     # Fine-tuned YOLOv8m (weights + training artifacts)
+│   │   ├── weights/best.pt           # Trained model weights
+│   │   ├── args.yaml                 # Training config
+│   │   └── results.csv               # Training metrics
+│   ├── segmentation/
+│   │   └── yolov8n-seg.pt             # Instance seg for team classification
+│   ├── pitch_keypoints/
+│   │   └── soccana_keypoints.pt       # Soccana YOLOv11 keypoint model (backup)
+│   └── pnlcalib/                      # PnLCalib — primary homography model (gitignored, ~640MB)
+│       ├── model/                     # HRNetV2 architecture code
+│       ├── utils/                     # Calibration + heatmap utilities
+│       ├── config/                    # HRNet YAML configs
+│       └── weights/{SV_kp,SV_lines}   # Pretrained weights (~253MB each)
+├── data/
+│   ├── period_detection_results.json  # Cached period boundaries for all 16 matches
+│   ├── manual_calibration/            # {slug}_frame_{N:07d}.json — manual homography seeds for Tier-3 matches
+│   └── object_detection/              # Labeled training data for YOLO fine-tuning
+│       ├── data.yaml                  # YOLO dataset config (2 classes)
+│       ├── images/{all,train,val}/    # 971 annotated frames
+│       ├── labels/{all,train,val}/    # YOLO-format labels (class cx cy w h)
+│       └── cvat_exports/              # Archived CVAT annotation exports
+├── videos/                            # Source match videos (gitignored)
+├── output/                            # All generated outputs (gitignored)
+│   ├── classifiers/                   # Per-game {slug}_classifier.pkl + {slug}_labels.npz
+│   └── classifier_validation/         # Annotated 2-min clips for visual QC of team classification
+├── notebooks/
+│   ├── 01_team_classification.ipynb   # Per-game labeling widget → KNN classifier + labels.npz + review + validation
+│   ├── 02_homography.ipynb            # Homography visualization + model comparison
+│   ├── 03_event_detection.ipynb       # Event detection scaffold (passes, shots, possession)
+│   └── detection_training.ipynb       # YOLO training + error analysis
 ├── requirements.txt
+├── CLAUDE.md
 └── README.md
 ```
 
 ## Roadmap (in priority order)
 
 1. ~~**Broadcast analysis**~~ — Done. Unsupervised period detection works on all 16 matches (15 PASS, 1 WARN).
-2. **Pitch homography** — In progress (`src/homography.py`). Works on ~40% of frames with <1.5m error. Needs center circle detection and temporal smoothing.
+2. **Pitch homography** — In progress. PnLCalib pretrained model + post-processing (v2). Tested on all 16 matches. Next step: optical flow / feature-matching camera motion estimation to propagate known-good projections through frames where PnLCalib fails, plus manual keypoint annotation for the hardest stadiums.
 3. **Event detection** — Ball position + player positions + team labels + pitch coords -> detect passes, shots, possession changes. Core deliverable. Blocked on homography.
 4. **Cross-shot player matching** — Re-identify players across camera cuts using team + pitch position (~70-80% automated, human corrects the rest).
 5. **Jersey number / player identity** — Semi-manual: human maps track clusters to squad lists. Full OCR is unreliable at broadcast resolution.
 
-## Data Flow (main.ipynb batch pipeline)
+## Data Flow (01_team_classification.ipynb)
 
-The batch annotation cell processes each game in two passes:
+The per-game labeling workflow runs in two passes:
 
 ```
 Pass 1: Detect + Track + Sample Embeddings
-  For every frame:
+  For every frame (across 6 × 90s windows spanning both halves):
     YOLO detection + BoT-SORT tracking -> all_detections[]
   Every 15th frame:
     YOLOv8-seg (full frame) -> person masks
     Masked crops -> ResNet18 -> 512-dim embeddings
     Store per-track: track_embeddings[track_id].append(embedding)
 
-Between passes: Fit & Classify
-  All embeddings -> PCA (512->32) -> GMM (k=2) fit
-  Per track: mean(embeddings) -> GMM predict -> team_id
-  BallInterpolator fills gaps up to 15 frames
+Between passes: Label & Fit
+  Top 200 tracks shown in widget -> human assigns A / B / Other
+  Labeled embeddings -> PCA (512->32) fit -> KNN (k=5) fit
 
-Pass 2: Annotate
-  Re-read video, draw team-colored ellipses + ball triangles -> MP4
+Pass 2 (validation): Detect + Classify + Annotate
+  Re-read a 2-min clip, collect embeddings, classify tracks by majority vote
+  Draw team-colored ellipses + ball triangles -> MP4 in output/classifier_validation/
 ```
 
-**Key design choice:** Team classification is done at the **track level**, not per-frame. Each track's embeddings are averaged into one vector and classified once. This eliminates flickering.
+**Key design choice:** Team classification is done at the **track level**, not per-frame. Each track casts one vote per sampled embedding; the majority label wins. This is more robust than a single prediction on the median embedding — a brief ID swap or handful of noisy frames gets outvoted by the dominant player's embeddings.
 
 ## Detection Model
 
@@ -91,22 +116,40 @@ Pass 2: Annotate
 - **Classes:** 2 - `person` (0), `ball` (1)
 - **Training:** 150 epochs, imgsz=1280, batch=8, mosaic=1.0, copy_paste=0.3, patience=30
 - **Dataset:** 971 frames across 16 matches (822 train / 149 val, match-level split)
-- **Best model:** `runs/detect/football_2class_yolov8m_v22/weights/best.pt`
+- **Best model:** `models/detection/weights/best.pt`
 - **Metrics:** mAP50=0.944, mAP50-95=0.748, Precision=0.952, Recall=0.892
-- **Weight resolution:** `Config.resolve_yolo_model()` auto-finds the latest `runs/detect/*/weights/best.pt`
+- **Weight resolution:** `Config.resolve_yolo_model()` resolves to `models/detection/weights/best.pt`
 
 Roles like goalkeeper, referee, and team assignment are NOT part of detection — they're handled entirely in post-processing (team classifier + future position heuristics).
 
 ## Team Classification Pipeline
 
+One-time per game (~15 min labeling), saved to `output/classifiers/` for reuse.
+
 1. **Segmentation:** YOLOv8n-seg runs on the full frame (not crops!) to produce person silhouette masks
-2. **Masking:** Each player's crop is masked - background pixels replaced with mean foreground color to avoid CNN bias
+2. **Masking:** Each player's crop is masked — background pixels replaced with mean foreground color to avoid CNN bias
 3. **Embedding:** Frozen ResNet18 backbone produces 512-dim vectors per masked crop, resized to 128x64 (tall format for full-body players)
-4. **PCA:** 512 -> 32 dims, removes noise
-5. **GMM fit:** Two-pass process:
-   - Pass 1: Rough k=2 GMM on all embeddings
-   - Pass 2: Remove bottom 5% by membership probability, re-fit for tighter centroids
-6. **Track-level prediction:** Average all embeddings for a track, classify the mean embedding once
+4. **PCA:** 512 → 32 dims, removes noise
+5. **Human labeling:** ~200 track crops shown in a widget; user assigns A/B/Other to each
+6. **KNN fit (k=5):** Trained on labeled embeddings in PCA space. Uses local neighborhood voting rather than single centroid — handles referees/GKs that sit between team clusters better than nearest-centroid
+7. **Track-level prediction:** Each track casts one vote per sampled embedding; majority label wins (more robust than single predict on median embedding — brief ID swaps or noisy frames get outvoted)
+
+**Saved artifacts per game:**
+- `output/classifiers/{slug}_classifier.pkl` — fitted PCA + KNN model
+- `output/classifiers/{slug}_labels.npz` — raw labeled embeddings + integer labels (source of truth; allows `TeamClassifier.refit_knn()` without re-labeling). Also stores `review_track_ids` + `review_track_labels` (track-level, includes skipped=-1) for the review widget.
+- `output/classifiers/{slug}_pass1.pkl` — raw track embeddings + best crops from Pass 1 (used by review and validation cells)
+
+**Review widget** (`01_team_classification.ipynb`): loads labels from disk cross-session, shows all labeled crops grouped by team (A / B / Other / Skipped) so mislabeled outliers are visually obvious. "Save corrections" button re-saves the npz and refits the classifier in one click.
+
+**Validation cell** (`01_team_classification.ipynb`): runs detection + classification on a 2-minute clip and saves an annotated video to `output/classifier_validation/{slug}_team_check.mp4`. Used to visually QC classification quality on the harder games (night/dusk, similar jerseys) before committing to full-game processing.
+
+**`TeamClassifier` API:**
+- `fit_supervised(embeddings, labels)` — fit PCA + KNN from labeled data
+- `classify_tracks(track_embeddings)` — classify all tracks by majority vote over per-embedding predictions
+- `save(path)` / `load(path)` — serialize/deserialize model state
+- `refit_knn(pkl_path, labels_path, n_neighbors=5)` — refit KNN from saved npz without re-labeling
+
+**Status:** 16/16 matches labeled. The unsupervised GMM path (`fit()`) remains available for exploration but is not used in production.
 
 ## Broadcast Analysis (`src/broadcast.py`)
 
@@ -139,58 +182,75 @@ from src.broadcast import (
 
 `detect_period_starts` needs only `segments[-1].end_frame` for total_frames — you can skip `analyze_broadcast` entirely and pass `[Segment(0, total_frames)]` for a fast OCR-only path (~5s/match vs ~7min/match for the full cut-detection pipeline).
 
-## Pitch Homography (`src/homography.py`)
+## Pitch Homography — PnLCalib (pretrained model)
 
-Maps image pixels to pitch coordinates (meters on a 105x68m FIFA-standard pitch). Classical computer vision approach.
+Maps image pixels to pitch coordinates (meters on a 105x68m FIFA-standard pitch). Uses **PnLCalib**, a pretrained HRNet-based encoder-decoder that detects keypoints and lines on the pitch, then estimates full camera parameters (3x4 projection matrix).
 
-**Pipeline:**
-1. `detect_field_mask` — HSV green segmentation -> largest contour = pitch area
-2. `detect_line_pixels` — Dual-channel white line detection within the field mask:
-   - Color-based: bright (adaptive threshold based on field median) + low saturation (<80)
-   - CLAHE-enhanced white top-hat transform: highlights thin bright structures on darker background
-   - Player bounding boxes (from YOLO) masked out before detection to eliminate white jersey false positives
-   - Adaptive thresholds: lower for dark fields (night/dusk games, detected via median V < 100)
-   - Connected component filtering: keeps elongated shapes, rejects compact blobs
-3. `detect_lines` — Probabilistic Hough Transform (threshold=40, minLineLength=60, maxLineGap=20)
-4. `merge_lines` — Co-linear segments merged (angle < 10deg, perpendicular distance < 50px, validated against white pixel support). Post-merge filter removes lines < 100px.
-5. `classify_lines` — Semantic labeling based on angle:
-   - **touchline** (< 15deg from horizontal): runs along the pitch length
-   - **perpendicular** (> 30deg from horizontal): halfway line, PA edges, goal lines
-   - **other** (15-30deg): ambiguous, could be PA top/bottom under heavy perspective
-6. `identify_touchlines` — Near (highest y = bottom of frame) and far (lowest y) touchlines, with minimum length (15% of frame width) and separation (10% of frame height) checks.
-7. `_identify_perpendicular_lines` — Matches perpendicular lines to known FIFA pitch lines using:
-   - Spacing patterns between detected lines vs known pitch geometry (PA edge = 16.5m, halfway = 52.5m, etc.)
-   - Position heuristic for single-perp fallback (center of frame = halfway line)
-   - Scoring: prefers assignments where halfway line is near frame center and pixels-per-meter is reasonable (~10-20)
-8. `estimate_homography` — Builds image<->pitch correspondences from touchline x perpendicular intersections, computes homography via RANSAC (threshold 5.0m), validates with player foot projection sanity check.
+**Why PnLCalib over classical approach:** The classical pipeline in `src/homography.py` (Hough lines + line classification) was tested on 5 matches × 3 frames = 15 frames and produced 0 visually correct results — even when reprojection error was low, projected player positions were wrong. Fundamental limitations: Hough transform fragments curves (center circle, penalty arcs) into noise, and line identification heuristics fail without clear perpendicular line structure. A pretrained model was chosen instead.
 
-**Current results** (tested on 5 matches x 3 frames = 15 frames):
-- 6/15 produce a working homography (~40%)
-- All successful homographies have < 1.5m reprojection error on inlier points
-- Best results on daylight games with clear pitch markings
+**Model comparison (tested on 5 diverse frames):**
+| Model | Success rate | Notes |
+|---|---|---|
+| **PnLCalib** (chosen) | 3/5 excellent | Fails cleanly (returns None). Best quality when it works. Outputs 3D-aware 3x4 projection matrix. |
+| YOLO Keypoint (Soccana) | 2-3/5 decent | More aggressive — attempts every frame but produces wrong results rather than admitting failure. |
+| SoccerNet sn-calibration | not tested | PnLCalib is its SOTA successor on same benchmarks. |
 
-**Failure modes (in priority order for fixing):**
-1. **Insufficient perpendicular lines** (most common): Midfield views without penalty area structure lack x-coordinate anchors. Both touchlines are detected but there's nothing to establish the horizontal position on the pitch.
-2. **Wrong line identification**: The spacing/position heuristic sometimes misidentifies which pitch line a detected perpendicular corresponds to. RANSAC catches some of these but not all.
-3. **Unusual stadiums**: jez-jed has a running track between camera and pitch with worn/faint markings — line detection fails.
-4. **Night game noise**: Dark fields (mor-ars, dec-mla) amplify grass texture in the line mask, producing many false line detections.
+**Current implementation: `run_pnlcalib_video.py` (v2)**
 
-**Highest-impact next improvements:**
-1. **Center circle detection** (ellipse fitting) — The center circle is visible in most broadcast frames and would immediately anchor the pitch center (x=52.5, y=34), solving the "no perpendicular lines" problem for midfield views.
-2. **Hypothesis testing for line identification** — Try multiple assignments of detected perpendicular lines to known pitch lines, score each by how many players project to valid pitch positions. Would fix wrong-identification failures.
-3. **Temporal smoothing** — Propagate a good homography from nearby frames to fill gaps. Camera motion between adjacent frames is small, so the homography changes slowly.
+Standalone script that runs PnLCalib on a match clip with five post-processing layers:
 
-**API:**
-```python
-from src.homography import estimate_homography, HomographyResult
-result = estimate_homography(frame, player_boxes=yolo_boxes)
-if result.H is not None:
-    # Map pixel coordinates to pitch meters
-    mapped = cv2.perspectiveTransform(pixel_pts, result.H)
-    # result.reprojection_error = mean error in meters (inliers only)
-    # result.n_inliers / result.n_matches = inlier ratio
-    # result.lines = list of DetectedLine with labels
+1. **Non-gameplay filtering** — Checks for scoreboard overlay via edge density in the `SCOREBOARD_ROI`. Frames without scoreboard (replays, close-ups, graphics) are skipped entirely — no homography is attempted, preventing false positives on non-pitch imagery. Threshold is auto-calibrated per match from the first 10 sampled frames.
+
+2. **Player sanity check** — Projects all detected player feet (via YOLO) to pitch coordinates. Rejects projections where <50% of players land within the 105×68m pitch (5m margin). Catches completely wrong calibrations.
+
+3. **Line alignment check** — Projects a set of key pitch lines (touchlines, halfway line, PA edges) and checks how many sampled points land on bright pixels in the image. Uses HSV thresholding (S<80, V>140) with large dilation. Catches projections that pass the player check by coincidence but are visually wrong (e.g., lines on stands or buildings).
+
+4. **Temporal consistency with outlier rejection** — The `ProjectionSmoother` has three response modes:
+   - **Small change** (diff < 0.08): Normal camera movement. EMA blend (alpha=0.3) for smooth transitions.
+   - **Medium change** (0.08 < diff < 0.3): Suspicious. Requires 3 consecutive frames agreeing on the new direction before accepting. Single-frame glitches are rejected and the last stable projection is reused.
+   - **Large change** (diff > 0.3): Likely a camera cut. Also requires 3-frame confirmation before resetting.
+   - When no valid P is available, reuses last good projection for up to 3 seconds (75 frames at 25fps).
+
+5. **Sampled line drawing** — Long pitch lines (touchlines, sidelines) are sampled at intermediate world-space points before projection, so the visible segment is drawn even when endpoints are far off-screen.
+
+**Results — tested on all 16 matches (v2, 60-second clips at 10:00 into first half):**
+
+| Tier | Matches | Coverage | Notes |
+|---|---|---|---|
+| **Tier 1 (>80%)** | jez-ars, dec-mla, jez-jed, sut-pet, sut-mla, mla-bud-2, jed-ars | 84-100% | Lines visually correct, stable across frames |
+| **Tier 2 (60-80%)** | pet-mor, pet-bok, bok-jed, bud-sut | 64-75% | Correct when present; gaps from close-ups/replays |
+| **Tier 3 (<60%)** | mor-bud, mor-ars, ars-dec | 10-43% | Night/dusk games, oblique cameras, running tracks |
+| **Crashes** | bok-jed-2, mla-bud | — | OpenCV assertion error (video codec/resolution issue) |
+
+Average coverage: **71.3%** (up from 64.7% in v1). All matches improved or stayed flat vs v1.
+
+**Failure mode analysis:**
+- **Night/dusk** (mor-ars, mor-bud): PnLCalib can't see pitch markings in low light. Model limitation.
+- **Oblique camera** (ars-dec): Camera angle outside PnLCalib's training distribution (top European leagues). 1.CFL's small stadiums have lower, more oblique cameras.
+- **Running tracks** (mor-ars): Model sometimes locks onto track lane markings instead of pitch lines.
+- **Close-ups/replays** (bud-sut, mla-bud-2): Now correctly filtered by scoreboard check. Coverage % reflects gameplay frames only.
+
+**Optical-flow camera motion fallback (`src/camera_motion.py`).** When PnLCalib produces a trusted projection, `CameraMotionTracker.seed()` detects good features on the pitch (`cv2.goodFeaturesToTrack`) and assigns each a pitch-world coordinate via the inverse plane homography. On subsequent frames where PnLCalib fails, `propagate()` runs Lucas-Kanade flow, RANSACs a fresh `image -> pitch` homography from the surviving correspondences, and returns a 3x4 P packed from that 3x3 (zero z-column — z=0 lines render correctly, goal posts skipped). Features are re-detected every 60 frames to prevent drift, and the trail is reset on non-gameplay frames or confirmed camera cuts. Only the planar homography is tracked: tracked features live on z=0 by construction, so PnP would be coplanar-degenerate, and the downstream event pipeline only needs player-foot -> pitch-XY.
+
+**Manual keypoint seeds (`src/manual_calibration.py`).** For Tier-3 matches where PnLCalib rarely succeeds, the user annotates 4+ named pitch landmarks on ~5-10 reference frames via an ipywidgets UI in `02_homography.ipynb`. `compute_homography` fits via `cv2.findHomography` (RANSAC above 6 pts, exact LS below), `projection_from_natural_homography` packs the result into a PnLCalib-convention 3x4, and `save_calibration` writes `data/manual_calibration/{slug}_frame_{N:07d}.json`. At runtime `load_match_seeds(slug)` loads every saved P for a match; the runner uses the frame-index-nearest seed as a last-resort input to the optical-flow tracker when PnLCalib and flow both fail. Landmark set: corners, halfway-line/center-circle intersections, penalty + goal box corners, penalty spots (26 landmarks total).
+
+**Dependencies:**
+- PnLCalib at `models/pnlcalib/` (gitignored, ~640MB)
+- Weights: `models/pnlcalib/weights/SV_kp` (~253MB) and `models/pnlcalib/weights/SV_lines` (~253MB)
+- Backup: Soccana YOLO keypoint model at `models/pitch_keypoints/soccana_keypoints.pt` (85MB)
+
+**Usage:**
+```bash
+# Default: PnLCalib + optical-flow fallback + auto-loaded manual seeds
+python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 60 --alpha 0.3
+
+# Benchmark against the v2 baseline
+python -m src.run_pnlcalib_video --match dec-mla --no_flow --no_manual_seeds
 ```
+
+**Runner fallback chain per frame:** PnLCalib -> sanity checks -> (optical-flow propagate if trail alive) -> (nearest manual seed if any) -> ProjectionSmoother stale hold (up to 3s). Stats breakdown printed at the end splits frames into PnLCalib-success / flow-carry / manual-seed / stale-hold / no-projection.
+
+**Classical pipeline (`src/homography.py`) is retained** but no longer the primary approach. It may be useful as a fallback or for debugging, but should not be relied on for production results.
 
 ## Dataset Conventions
 
@@ -198,7 +258,7 @@ if result.H is not None:
 - **Match slugs:** Short identifiers like `bud-sut`, `ars-dec`, `mla-bud-2` (see `Config.MATCH_VIDEOS` for all 16)
 - **Label format:** YOLO normalized `class cx cy w h` per line
 - **Train/val split:** Match-level (entire matches held out), NOT random frames. Val matches: `mla-bud-2`, `jed-ars`, `pet-mor`. Prevents data leakage.
-- **Master copy:** `dataset/images/all/` and `dataset/labels/all/` hold the full 971-frame dataset. `train/` and `val/` are populated by `split_val()`.
+- **Master copy:** `data/object_detection/images/all/` and `data/object_detection/labels/all/` hold the full 971-frame dataset. `train/` and `val/` are populated by `split_val()`.
 - **Annotations:** Done in CVAT, exported as YOLO 1.1 format
 
 ## Key Configuration (src/config.py)
@@ -214,9 +274,9 @@ if result.H is not None:
 
 ## Known Limitations
 
-- **Team classification** works well on ~10/16 matches, struggles on ~6 where jersey colors are similar or lighting is difficult
+- **Team classification** works well on ~10/16 matches, struggles on ~6 where jersey colors are similar or lighting is difficult. All 16 matches labeled and validated via 2-min annotated clips. Majority vote per track is more robust than a single median-embedding prediction but ID swaps from long occlusions can still cause systematic errors.
 - **Referee/GK filtering** via bottom-5% GMM membership probability is weak — refs often cluster tightly with one team. Future plan: use pitch position (requires homography)
-- **Pitch homography** works on ~40% of frames. The main blocker is perpendicular line detection — center circle detection would unlock most remaining frames.
+- **Pitch homography** — PnLCalib v2 averages 71% coverage across 16 matches. Tier 1 matches (7 of 14 working) are at 84-100%. Tier 3 matches (3 of 14) are at 10-43% due to night/dusk conditions, oblique cameras, and running tracks. Two matches crash with OpenCV errors. No camera motion estimation yet — each frame is processed independently.
 - **Ball tracking** uses simple linear interpolation across gaps. Could be improved with tracker-aware logic
 - **ars-dec source video** has a ~3:14 recording gap at the start of the second half — the second-half recording begins with the match clock already at 48:14. Period detection correctly flags this via its 42-min gap warning, but downstream event detection on ars-dec SH will be missing the first ~3 min of gameplay.
 

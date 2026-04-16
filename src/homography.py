@@ -252,7 +252,7 @@ def detect_lines(
     """Detect line segments using Probabilistic Hough Transform."""
     raw = cv2.HoughLinesP(
         line_mask, rho=1, theta=np.pi / 180,
-        threshold=40, minLineLength=min_length, maxLineGap=max_gap,
+        threshold=50, minLineLength=min_length, maxLineGap=max_gap,
     )
     if raw is None:
         return []
@@ -282,7 +282,7 @@ def merge_lines(
     line_mask: np.ndarray,
     angle_thresh: float = 10.0,
     dist_thresh: float = 50.0,
-    min_merged_length: int = 100,
+    min_merged_length: int = 150,
 ) -> List[DetectedLine]:
     """Merge co-linear line segments into single representatives."""
     # Pre-filter: only keep lines with real white-pixel support
@@ -363,10 +363,10 @@ def classify_lines(
 
         if horiz_dev < horizontal_angle_range:
             line.label = "touchline"
-        elif horiz_dev > 30:
+        elif horiz_dev > 45:
             line.label = "perpendicular"
         else:
-            # 15-30°: could be PA top/bottom under heavy perspective
+            # 15-45°: likely noise from center circle / penalty arcs
             line.label = "other"
 
     return lines
@@ -409,6 +409,61 @@ def identify_touchlines(
         far = None
 
     return near, far
+
+
+# ── Perpendicular line validation ────────────────────────────────────
+
+def _validate_perpendicular_line(
+    line: DetectedLine,
+    near_tl: DetectedLine,
+    far_tl: DetectedLine,
+    frame_shape: Tuple[int, int],
+) -> bool:
+    """
+    Check that a perpendicular line is geometrically consistent with a real
+    pitch line: it must extend from one touchline to the other.
+
+    A real perpendicular line (halfway, PA edge, goal line) runs the full
+    width of the pitch. In the image, it should intersect both touchlines
+    at reasonable x-positions and its detected segment should lie between
+    the touchlines.  Circle/arc fragments fail this check because they're
+    short and don't span the full field height.
+    """
+    h, w = frame_shape[:2]
+    margin_x = w * 0.3  # allow intersection slightly off-screen
+
+    # Must intersect both touchlines
+    near_pt = _line_intersection(line, near_tl)
+    far_pt = _line_intersection(line, far_tl)
+    if near_pt is None or far_pt is None:
+        return False
+
+    # Intersections must be within frame width (with margin)
+    if not (-margin_x <= near_pt[0] <= w + margin_x):
+        return False
+    if not (-margin_x <= far_pt[0] <= w + margin_x):
+        return False
+
+    # The detected segment must lie between (or near) the two touchlines
+    near_y = (near_tl.y1 + near_tl.y2) / 2
+    far_y = (far_tl.y1 + far_tl.y2) / 2
+    tl_gap = abs(near_y - far_y)
+    y_min = min(near_y, far_y) - tl_gap * 0.15
+    y_max = max(near_y, far_y) + tl_gap * 0.15
+
+    # At least one endpoint must be within the touchline band
+    line_y_min = min(line.y1, line.y2)
+    line_y_max = max(line.y1, line.y2)
+    if line_y_max < y_min or line_y_min > y_max:
+        return False
+
+    # The detected segment should span at least 15% of the touchline gap
+    overlap_top = max(line_y_min, y_min)
+    overlap_bot = min(line_y_max, y_max)
+    if (overlap_bot - overlap_top) < tl_gap * 0.15:
+        return False
+
+    return True
 
 
 # ── Intersection detection ───────────────────────────────────────────
@@ -723,6 +778,58 @@ def _match_multiple_perps(
     return best_result
 
 
+# ── Vanishing point filtering ────────────────────────────────────────
+
+def _filter_by_vanishing_point(
+    perps: List[DetectedLine],
+    max_dist: float = 80.0,
+) -> List[DetectedLine]:
+    """
+    Filter perpendicular lines by vanishing-point consensus.
+
+    All real perpendicular pitch lines are parallel in 3D space, so they
+    converge to a single vanishing point in the image. Lines from circles
+    or arcs point in different directions and won't converge to the same VP.
+
+    Uses RANSAC-style approach: find the VP supported by the most lines,
+    then keep only lines that pass near it.
+    """
+    if len(perps) < 3:
+        return perps
+
+    # Compute all pairwise intersections (VP candidates)
+    vp_candidates = []
+    for i in range(len(perps)):
+        for j in range(i + 1, len(perps)):
+            pt = _line_intersection(perps[i], perps[j])
+            if pt is not None:
+                vp_candidates.append((pt, i, j))
+
+    if not vp_candidates:
+        return perps
+
+    # For each VP candidate, count how many lines pass close to it
+    best_inliers = []
+    for (vx, vy), _, _ in vp_candidates:
+        inliers = []
+        for k, line in enumerate(perps):
+            dx = line.x2 - line.x1
+            dy = line.y2 - line.y1
+            length = np.sqrt(dx**2 + dy**2)
+            if length < 1:
+                continue
+            # Point-to-line distance from VP to the extended line
+            dist = abs(dx * (line.y1 - vy) - dy * (line.x1 - vx)) / length
+            if dist < max_dist:
+                inliers.append(k)
+        if len(inliers) > len(best_inliers):
+            best_inliers = inliers
+
+    if len(best_inliers) >= 2:
+        return [perps[i] for i in best_inliers]
+    return perps
+
+
 # ── Full pipeline ────────────────────────────────────────────────────
 
 def estimate_homography(
@@ -740,6 +847,11 @@ def estimate_homography(
         HomographyResult with homography matrix and diagnostics.
     """
     h, w = frame.shape[:2]
+
+    # Early reject: close-ups and replays have few visible players.
+    # A game-play wide shot should have at least 8 detected persons.
+    if player_boxes is not None and len(player_boxes) < 8:
+        return HomographyResult(H=None)
 
     # Step 1: Field segmentation
     field_mask = detect_field_mask(frame)
@@ -760,9 +872,25 @@ def estimate_homography(
     if near_tl is None or far_tl is None:
         return HomographyResult(H=None, lines=lines)
 
-    # Step 6: Get perpendicular + other lines that could be pitch lines
-    perps = [l for l in lines
-             if l.label in ("perpendicular", "other") and l.length >= w * 0.04]
+    # Step 6: Get perpendicular lines (exclude "other" — those are mostly
+    # circle/arc fragments at ambiguous angles, not real pitch lines)
+    perps = [l for l in lines if l.label == "perpendicular" and l.length >= w * 0.04]
+
+    # Validate: each perpendicular must span between both touchlines
+    perps = [l for l in perps
+             if _validate_perpendicular_line(l, near_tl, far_tl, (h, w))]
+
+    # Vanishing point consensus: all real perpendicular pitch lines are
+    # parallel in 3D → they converge to one VP in the image. Reject any
+    # line that doesn't pass near the consensus VP.
+    if len(perps) >= 3:
+        perps = _filter_by_vanishing_point(perps)
+
+    # Cap at 5 — a single broadcast view never shows more than 5
+    # perpendicular pitch lines. Keep the longest (most reliable).
+    if len(perps) > 5:
+        perps.sort(key=lambda l: -l.length)
+        perps = perps[:5]
 
     if len(perps) < 1:
         return HomographyResult(H=None, lines=lines,
@@ -891,21 +1019,24 @@ def estimate_homography(
         errors = np.sqrt(np.sum((projected - pit_pts) ** 2, axis=1))
         reproj_err = float(np.mean(errors))
 
-    # Sanity check: project player feet and verify reasonable positions
+    # Sanity check: project player feet and verify reasonable positions.
+    # A correct homography should place most detected persons on or very
+    # near the pitch.  Coaches/subs/ball boys may be slightly off, but the
+    # majority should land within a small margin of the 105×68 rectangle.
     if player_boxes and len(player_boxes) >= 5:
         feet = []
         for bx1, by1, bx2, by2 in player_boxes:
             feet.append([(bx1 + bx2) / 2, by2])
         feet_arr = np.array(feet, dtype=np.float64).reshape(-1, 1, 2)
         mapped = cv2.perspectiveTransform(feet_arr, H).reshape(-1, 2)
-        # Count players that project to within 20m of the pitch
+        # Count players that project within 5m of the pitch boundary
         on_pitch = 0
         for mx, my in mapped:
-            if -20 <= mx <= PITCH_LENGTH + 20 and -20 <= my <= PITCH_WIDTH + 20:
+            if -5 <= mx <= PITCH_LENGTH + 5 and -5 <= my <= PITCH_WIDTH + 5:
                 on_pitch += 1
         frac_on = on_pitch / len(player_boxes)
-        # If fewer than 20% of players project near the pitch, homography is bad
-        if frac_on < 0.2:
+        # If fewer than 35% of players project near the pitch, reject
+        if frac_on < 0.35:
             return HomographyResult(H=None, lines=lines,
                                     n_matches=len(image_points))
 

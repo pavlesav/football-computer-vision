@@ -3,16 +3,13 @@ from pathlib import Path
 
 class Config:
     # --- Paths ---
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    VIDEOS_DIR = PROJECT_ROOT / "videos"
-    OUTPUT_DIR = PROJECT_ROOT / "output"
-
-    FULL_MATCH_VIDEO = VIDEOS_DIR / "BUDUCNOST - SUTJESKA 1.CFL 20.KOLO 21.02.2026. CIJELA UTAKMICA.mp4"
-    TEST_CLIP = VIDEOS_DIR / "test_clip_5min.mp4"
-
-    # --- Clip extraction ---
-    GAME_START_SEC = 4 * 60 + 38        # 04:38
-    CLIP_DURATION_SEC = 5 * 60           # 5 minutes
+    PROJECT_ROOT          = Path(__file__).resolve().parent.parent
+    VIDEOS_DIR            = PROJECT_ROOT / "videos"
+    OUTPUT_DIR             = PROJECT_ROOT / "output"
+    OUTPUT_TEAMS_DIR       = OUTPUT_DIR / "teams"
+    OUTPUT_HOMOGRAPHY_DIR  = OUTPUT_DIR / "homography"
+    OUTPUT_EVENTS_DIR      = OUTPUT_DIR / "events"
+    OUTPUT_CLASSIFIERS_DIR = OUTPUT_DIR / "classifiers"
 
     # --- Match videos (all 16 annotated matches) ---
     MATCH_VIDEOS = {
@@ -36,7 +33,7 @@ class Config:
 
     # --- YOLO Detection ---
     YOLO_MODEL = None
-    YOLO_SEG_MODEL = "yolov8n-seg.pt"  # segmentation model for team classification
+    YOLO_SEG_MODEL = str(Path(__file__).resolve().parent.parent / "models" / "segmentation" / "yolov8n-seg.pt")
     PLAYER_CONF_THRESHOLD = 0.25
     BALL_CONF_THRESHOLD = 0.15
     # 2-class model: YOLO detects person (0) and ball (1) only.
@@ -84,7 +81,7 @@ class Config:
 
         Priority:
           1) Explicit Config.YOLO_MODEL if set and exists
-          2) Most recently modified local runs/detect/*/weights/best.pt
+          2) models/detection/weights/best.pt (fine-tuned model)
           3) Fallback to base pretrained model
         """
         if cls.YOLO_MODEL:
@@ -92,14 +89,8 @@ class Config:
             if configured.exists():
                 return str(configured)
 
-        runs_dir = cls.PROJECT_ROOT / "runs" / "detect"
-        if runs_dir.exists():
-            checkpoints = sorted(
-                runs_dir.glob("*/weights/best.pt"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if checkpoints:
-                return str(checkpoints[0])
+        detection_weights = cls.PROJECT_ROOT / "models" / "detection" / "weights" / "best.pt"
+        if detection_weights.exists():
+            return str(detection_weights)
 
         return "yolov8n.pt"

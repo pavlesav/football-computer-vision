@@ -11,7 +11,7 @@ CLASSES = {0: "person", 1: "ball"}
 
 def create_data_yaml(dataset_dir: Path = None) -> Path:
     """Create the data.yaml config file required for YOLO training."""
-    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "dataset"
+    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "data" / "object_detection"
     yaml_path = dataset_dir / "data.yaml"
 
     content = f"""# Football Detection Dataset
@@ -44,7 +44,7 @@ def split_val(dataset_dir: Path = None, val_matches: list = None):
     everything else goes to train.
     """
     val_matches = val_matches or VAL_MATCHES
-    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "dataset"
+    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "data" / "object_detection"
     train_imgs = dataset_dir / "images" / "train"
     train_lbls = dataset_dir / "labels" / "train"
     val_imgs = dataset_dir / "images" / "val"
@@ -88,7 +88,7 @@ def visualize_labels(dataset_dir: Path = None, n_samples: int = 6):
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
 
-    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "dataset"
+    dataset_dir = dataset_dir or Config.PROJECT_ROOT / "data" / "object_detection"
     images_dir = dataset_dir / "images" / "train"
     labels_dir = dataset_dir / "labels" / "train"
 

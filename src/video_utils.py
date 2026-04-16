@@ -7,16 +7,12 @@ from .config import Config
 
 
 def extract_clip(
-    source: Path = None,
-    output: Path = None,
-    start_sec: float = None,
-    duration_sec: float = None,
+    source: Path,
+    output: Path,
+    start_sec: float,
+    duration_sec: float,
 ) -> Path:
     """Extract a clip from a video using ffmpeg (fast, no re-encoding)."""
-    source = source or Config.FULL_MATCH_VIDEO
-    output = output or Config.TEST_CLIP
-    start_sec = start_sec if start_sec is not None else Config.GAME_START_SEC
-    duration_sec = duration_sec if duration_sec is not None else Config.CLIP_DURATION_SEC
 
     if output.exists():
         print(f"Clip already exists: {output}")

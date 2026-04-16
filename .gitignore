@@ -1,21 +1,26 @@
 # Videos (too large for git)
 videos/
 
-# Output videos
+# Output videos and test frames
 output/
 
-# Dataset (images too large for git, labels tracked)
-dataset/images/
+# Training images (large, labels + data.yaml ARE tracked)
+data/object_detection/images/
 *.cache
+
+# Model weights
+*.pt
+*.pth
+*.npy
+
+# PnLCalib third-party repo (code + weights, ~640MB)
+models/pnlcalib/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 .ipynb_checkpoints/
-
-# Model weights
-*.pt
 
 # OS
 .DS_Store
