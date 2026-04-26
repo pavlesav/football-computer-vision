@@ -36,12 +36,13 @@ football-computer-vision/
 │   ├── tracking.py                    # Tracker: track-level team assignment
 │   ├── broadcast.py                   # Camera cut detection, period detection via clock OCR
 │   ├── camera_motion.py               # Optical-flow tracker: propagates homography across PnLCalib dropouts
-│   ├── manual_calibration.py          # Pitch-keypoint labeling UI + saved homography seeds for Tier-3 matches
+│   ├── manual_calibration.py          # Landmark / drag-line / line-adjust GT widgets + saved homography seeds
 │   ├── homography.py                  # Classical pitch line detection (legacy, not primary)
 │   ├── visualization.py               # Annotator: ellipses, triangles, bboxes
 │   ├── video_utils.py                 # Video I/O, clip extraction (ffmpeg)
 │   ├── dataset.py                     # Training data management, train/val split
-│   └── run_pnlcalib_video.py          # PnLCalib homography on video clips
+│   ├── run_pnlcalib_video.py          # PnLCalib homography on video clips
+│   └── run_demo.py                    # FSCG demo renderer: tracking + names + speed/distance + minimap
 ├── models/                            # All models and weights
 │   ├── detection/                     # Fine-tuned YOLOv8m (weights + training artifacts)
 │   │   ├── weights/best.pt           # Trained model weights
@@ -67,11 +68,13 @@ football-computer-vision/
 ├── videos/                            # Source match videos (gitignored)
 ├── output/                            # All generated outputs (gitignored)
 │   ├── classifiers/                   # Per-game {slug}_classifier.pkl + {slug}_labels.npz
-│   └── classifier_validation/         # Annotated 2-min clips for visual QC of team classification
+│   ├── classifier_validation/         # Annotated 2-min clips for visual QC of team classification
+│   └── demo/                          # FSCG demo MP4s (`{slug}_{ts}_demo.mp4`, `{slug}_{ts}_discover.mp4`)
 ├── notebooks/
 │   ├── 01_team_classification.ipynb   # Per-game labeling widget → KNN classifier + labels.npz + review + validation
 │   ├── 02_homography.ipynb            # Homography visualization + model comparison
 │   ├── 03_event_detection.ipynb       # Event detection scaffold (passes, shots, possession)
+│   ├── 04_demo_video.ipynb            # FSCG demo render + label/calibrate/compare iteration loop
 │   └── detection_training.ipynb       # YOLO training + error analysis
 ├── requirements.txt
 ├── CLAUDE.md
@@ -81,7 +84,7 @@ football-computer-vision/
 ## Roadmap (in priority order)
 
 1. ~~**Broadcast analysis**~~ — Done. Unsupervised period detection works on all 16 matches (15 PASS, 1 WARN).
-2. **Pitch homography** — In progress. PnLCalib pretrained model + post-processing (v2). Tested on all 16 matches. Next step: optical flow / feature-matching camera motion estimation to propagate known-good projections through frames where PnLCalib fails, plus manual keypoint annotation for the hardest stadiums.
+2. **Pitch homography** — In progress. PnLCalib pretrained model + post-processing (v2), Lucas-Kanade optical-flow propagation (`camera_motion.py`), and manual seeds (`manual_calibration.py`) all wired into the runner. v2 averages 71% coverage across 16 matches. The demo notebook (`04_demo_video.ipynb`) added a label/calibrate/compare iteration loop with a line-adjust ground-truth widget seeded from the pipeline's own P. Next step: use that loop on a representative clip to diagnose the residual drift/wrong-overlay failures (PnLCalib output vs `refine_projection_to_lines` bias vs flow-propagated bad seed) and tighten whichever stage is responsible.
 3. **Event detection** — Ball position + player positions + team labels + pitch coords -> detect passes, shots, possession changes. Core deliverable. Blocked on homography.
 4. **Cross-shot player matching** — Re-identify players across camera cuts using team + pitch position (~70-80% automated, human corrects the rest).
 5. **Jersey number / player identity** — Semi-manual: human maps track clusters to squad lists. Full OCR is unreliable at broadcast resolution.
@@ -232,7 +235,11 @@ Average coverage: **71.3%** (up from 64.7% in v1). All matches improved or staye
 
 **Optical-flow camera motion fallback (`src/camera_motion.py`).** When PnLCalib produces a trusted projection, `CameraMotionTracker.seed()` detects good features on the pitch (`cv2.goodFeaturesToTrack`) and assigns each a pitch-world coordinate via the inverse plane homography. On subsequent frames where PnLCalib fails, `propagate()` runs Lucas-Kanade flow, RANSACs a fresh `image -> pitch` homography from the surviving correspondences, and returns a 3x4 P packed from that 3x3 (zero z-column — z=0 lines render correctly, goal posts skipped). Features are re-detected every 60 frames to prevent drift, and the trail is reset on non-gameplay frames or confirmed camera cuts. Only the planar homography is tracked: tracked features live on z=0 by construction, so PnP would be coplanar-degenerate, and the downstream event pipeline only needs player-foot -> pitch-XY.
 
-**Manual keypoint seeds (`src/manual_calibration.py`).** For Tier-3 matches where PnLCalib rarely succeeds, the user annotates 4+ named pitch landmarks on ~5-10 reference frames via an ipywidgets UI in `02_homography.ipynb`. `compute_homography` fits via `cv2.findHomography` (RANSAC above 6 pts, exact LS below), `projection_from_natural_homography` packs the result into a PnLCalib-convention 3x4, and `save_calibration` writes `data/manual_calibration/{slug}_frame_{N:07d}.json`. At runtime `load_match_seeds(slug)` loads every saved P for a match; the runner uses the frame-index-nearest seed as a last-resort input to the optical-flow tracker when PnLCalib and flow both fail. Landmark set: corners, halfway-line/center-circle intersections, penalty + goal box corners, penalty spots (26 landmarks total).
+**Manual ground-truth widgets (`src/manual_calibration.py`).** For Tier-3 matches where PnLCalib rarely succeeds — and for ground-truth labelling of any frame in `04_demo_video.ipynb` — three ipywidgets UIs share the same on-disk schema (`data/manual_calibration/{slug}_frame_{N:07d}.json`). All three feed `save_*_calibration`, which fits `H` via the appropriate solver, packs a PnLCalib-convention 3x4 via `projection_from_natural_homography`, and persists. `load_match_seeds(slug)` reads every saved P for a match; the runner uses the frame-index-nearest seed as a last-resort input to the optical-flow tracker when PnLCalib and flow both fail.
+
+  - **`build_labeling_widget`** — original click-landmark UI (`02_homography.ipynb`). User taps named landmarks (corners, halfway/center-circle intersections, PA + 6yd corners, penalty spots — 26 total) on the broadcast frame; `compute_homography` fits via `cv2.findHomography` (RANSAC ≥6 pts, exact LS below). Best when several landmarks are visible.
+  - **`build_line_labeling_widget`** — drag-line + tap-point UI (`04_demo_video.ipynb`). User drags two clicks along each painted pitch line to define it (line equation only — clicks don't have to be precise endpoints), and taps single arc-intersection points where straight lines are scarce (e.g. center-circle ∩ halfway, penalty-arc ∩ PA-front). `homography_from_lines_and_points` solves a unified SVD: each line and each point contributes 2 constraint rows on `M = H^(-T)`. Needs ≥4 points-only or ≥5 mixed correspondences. Useful for frames with no clear keypoint landmarks.
+  - **`build_line_adjust_widget`** — line-adjust UI seeded by the pipeline's current `P` (`04_demo_video.ipynb`). Pre-projects every named pitch line onto the frame using the supplied initial P; the user clicks a line to confirm it (snaps to the pipeline's projection) and drags an endpoint handle to nudge it onto the painted line. "Confirm all" mass-confirms; live cyan-dashed preview shows the fit. Saves via the same line-correspondence solver. Fastest path when the pipeline is mostly right and only a few lines need correction.
 
 **Dependencies:**
 - PnLCalib at `models/pnlcalib/` (gitignored, ~640MB)
@@ -251,6 +258,37 @@ python -m src.run_pnlcalib_video --match dec-mla --no_flow --no_manual_seeds
 **Runner fallback chain per frame:** PnLCalib -> sanity checks -> (optical-flow propagate if trail alive) -> (nearest manual seed if any) -> ProjectionSmoother stale hold (up to 3s). Stats breakdown printed at the end splits frames into PnLCalib-success / flow-carry / manual-seed / stale-hold / no-projection.
 
 **Classical pipeline (`src/homography.py`) is retained** but no longer the primary approach. It may be useful as a fallback or for debugging, but should not be relied on for production results.
+
+## Demo Video Pipeline (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)
+
+End-to-end clip renderer used as a pitch artefact for the FSCG presentation: tracked players with jersey-coloured ellipses, name + jersey-number badges, live km/h + cumulative distance, ball triangle, pitch-line homography overlay, and a bottom-right minimap.
+
+**Per-frame pipeline:**
+1. YOLO detection + BoT-SORT tracking (`persist=True`).
+2. Wide-shot gate (`is_wide_shot`): drops close-ups so the flow tracker doesn't reseed on a pointless view; speed display freezes on close-ups but cumulative distance keeps showing.
+3. Homography via the same fallback chain as `run_pnlcalib_video` (PnLCalib → flow propagation → manual seed → smoother stale hold), with `refine_projection_to_lines` snapping P onto painted white pixels and a `ProjectionSmoother` (alpha=0.3) EMA-blending across frames.
+4. `project_foot` (bottom-centre of bbox) → pitch XY in metres for each player; fed to a `PlayerStats` accumulator with telemetry guards (40 km/h hard cap, 3 m teleport snap, 0.12 m noise floor) so a bad single-frame projection or ID swap doesn't poison cumulative distance. Pre-roll runs through the loop silently so stats are warm by the first rendered frame.
+5. Ball: 2-frame velocity-based extrapolation across detection gaps (up to 20 frames ≈ 0.8s @ 25fps), with damping that fades the predicted bbox as the gap grows.
+
+**Per-game configuration in `04_demo_video.ipynb`:**
+- `PLAYER_NAMES: dict[track_id, (name, team_id, jersey_no)]` — populated by running the `--discover` CLI first, eyeballing track IDs, then mapping each to a real player. Multiple track IDs can map to the same player (re-entries get fresh BoT-SORT IDs).
+- `TRACK_REMAPS: list[(seconds_into_render, {old_id: new_id, ...})]` — patches mid-clip ID swaps when two crossing players' BoT-SORT IDs flip.
+
+**Iteration loop (cells 12-18):** Label rendered frames as Good / Drift / Wrong scale / Wrong overlay / No overlay / Skip via a navigable widget; auto-exports bad frames to `output/demo/diag/labeled/`. Pick a labelled frame and calibrate ground truth on the corresponding source frame using `build_line_adjust_widget` (or the from-scratch `build_line_labeling_widget` if PnLCalib fails on that frame). The compare cell loads every saved GT for the match, runs PnLCalib + refine on that exact source frame, and overlays current pipeline (white) vs ground truth (cyan) with per-frame mean pixel error at 7 reference world points (centre spot, halfway-line endpoints, PA outer corners). Saved GT files double as runtime seeds for the next render via `load_match_seeds`.
+
+**Output layout:**
+- `output/demo/{slug}_{ts}_demo.mp4` — final rendered clip
+- `output/demo/{slug}_{ts}_discover.mp4` — `--discover` mode: track IDs only, no homography, no names (used to populate `PLAYER_NAMES`)
+
+**CLI usage:**
+```bash
+# Step 1 — find track IDs
+python -m src.run_demo --match sut-mla --start_ts 1:04:48 --duration_sec 16 --discover
+
+# Step 2 — edit PLAYER_NAMES in run_demo.py, then render
+python -m src.run_demo --match sut-mla --start_ts 1:04:48 --duration_sec 16
+```
+The notebook (`04_demo_video.ipynb`) is the iteration-friendly version of the same pipeline — same logic inline in cell 9, plus the label / calibrate / compare cells.
 
 ## Dataset Conventions
 

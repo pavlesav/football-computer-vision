@@ -32,8 +32,9 @@ Full-match broadcast video
 | Broadcast Analysis | Done | Unsupervised period detection, 15/16 matches PASS |
 | Detection + Tracking | Done | YOLOv8m + BoT-SORT, mAP50=0.944 |
 | Team Classification | Done | ResNet18 + PCA + KNN (k=5), 16/16 matches labeled |
-| Pitch Homography | In Progress | PnLCalib pretrained model, 71% avg coverage across 16 matches |
+| Pitch Homography | In Progress | PnLCalib v2 + optical-flow + manual seeds, 71% avg coverage; per-frame drift being diagnosed via GT loop |
 | Event Detection | Planned | Requires homography |
+| Demo Video | Done | FSCG clip renderer with tracked players, names, speed/distance, minimap (`04_demo_video.ipynb`) |
 
 ## Project Structure
 
@@ -47,11 +48,14 @@ football-computer-vision/
 │   ├── team_classifier.py             # TeamClassifier: PCA + KNN (k=5) supervised classification
 │   ├── tracking.py                    # Tracker: track-level team assignment
 │   ├── broadcast.py                   # Camera cut detection, period detection via clock OCR
+│   ├── camera_motion.py               # Optical-flow propagation across PnLCalib dropouts
+│   ├── manual_calibration.py          # Landmark / drag-line / line-adjust GT widgets + saved seeds
 │   ├── homography.py                  # Classical pitch line detection (legacy, not primary)
 │   ├── visualization.py               # Annotator: ellipses, triangles, bboxes
 │   ├── video_utils.py                 # Video I/O, clip extraction (ffmpeg)
 │   ├── dataset.py                     # Training data management, train/val split
-│   └── run_pnlcalib_video.py          # PnLCalib homography on video clips
+│   ├── run_pnlcalib_video.py          # PnLCalib homography on video clips
+│   └── run_demo.py                    # FSCG demo renderer: tracking + names + speed/distance + minimap
 ├── models/                            # All models and weights
 │   ├── detection/weights/best.pt      # Fine-tuned YOLOv8m
 │   ├── segmentation/yolov8n-seg.pt    # Instance seg for team classification
@@ -59,6 +63,7 @@ football-computer-vision/
 │   └── pnlcalib/                      # PnLCalib — primary homography model (gitignored, ~640MB)
 ├── data/
 │   ├── period_detection_results.json  # Cached period boundaries for all 16 matches
+│   ├── manual_calibration/            # {slug}_frame_{N:07d}.json — manual homography seeds
 │   └── object_detection/              # Labeled training data for YOLO fine-tuning
 │       ├── data.yaml                  # YOLO dataset config (2 classes)
 │       ├── images/{all,train,val}/    # 971 annotated frames across 16 matches
@@ -67,11 +72,13 @@ football-computer-vision/
 │   ├── 01_team_classification.ipynb   # Per-game labeling widget → KNN classifier + review + validation
 │   ├── 02_homography.ipynb            # Homography visualization + model comparison
 │   ├── 03_event_detection.ipynb       # Event detection scaffold (passes, shots, possession)
+│   ├── 04_demo_video.ipynb            # FSCG demo render + label/calibrate/compare iteration loop
 │   └── detection_training.ipynb       # YOLO training + error analysis
 ├── videos/                            # Source match videos (gitignored)
 ├── output/                            # All generated outputs (gitignored)
 │   ├── classifiers/                   # Per-game classifier.pkl + labels.npz + pass1.pkl
-│   └── classifier_validation/         # Annotated 2-min clips for visual QC
+│   ├── classifier_validation/         # Annotated 2-min clips for visual QC
+│   └── demo/                          # FSCG demo MP4s (full clip + discover-mode track-ID clip)
 ├── requirements.txt
 ├── CLAUDE.md                          # Detailed project guide for AI assistants
 └── README.md
@@ -139,7 +146,25 @@ Average: **71.3%** coverage. Tier 3 failures are caused by night/dusk lighting, 
 python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 60 --alpha 0.3
 ```
 
-**Next step: camera motion estimation** (optical flow / feature matching) to propagate known-good projections through frames where PnLCalib fails, combined with manual keypoint annotation for the hardest stadiums.
+**Per-frame fallback chain** (now wired into the runner): PnLCalib → sanity + line-alignment checks → optical-flow propagation (`camera_motion.py`, Lucas-Kanade on pitch features re-detected every 60 frames) → nearest manual seed (`manual_calibration.py`, `data/manual_calibration/{slug}_frame_{N:07d}.json`) → smoother stale-hold for up to 3 seconds. The end-of-run breakdown attributes each frame to one of these sources so it's immediately visible which stage is carrying the clip.
+
+**Ground-truth widgets** for evaluating and seeding the homography (all share the same on-disk schema — `load_match_seeds` reads any of them):
+- `build_labeling_widget` — click named landmarks (corners, halfway/CC intersections, PA + 6yd corners, penalty spots).
+- `build_line_labeling_widget` — drag pitch lines and tap arc-intersection points; one unified solver handles both.
+- `build_line_adjust_widget` — pre-projects every named line using the pipeline's current `P` so the user clicks to confirm and drags an endpoint to nudge — fastest path when the pipeline is mostly right.
+
+### 5. Demo Video (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)
+
+Polished clip renderer used as a pitch artefact: tracked players with team-coloured ellipses, name + jersey-number badges, live km/h + cumulative distance, ball triangle, pitch-line homography overlay, and a bottom-right minimap. Each per-game render needs `PLAYER_NAMES: {track_id: (name, team_id, jersey_no)}` mapped from a `--discover`-mode pass that draws raw track IDs.
+
+The notebook bundles an iteration loop: scrub the rendered MP4 in a labeling widget tagging each frame Good / Drift / Wrong overlay / etc.; calibrate ground-truth `P` on the worst frames using the line-adjust widget seeded by the pipeline's own projection; and a compare cell that overlays current pipeline (white) vs ground truth (cyan) with per-frame mean pixel error at 7 reference world points. Saved GTs double as runtime seeds for the next render.
+
+```bash
+# Find track IDs first
+python -m src.run_demo --match sut-mla --start_ts 1:04:48 --duration_sec 16 --discover
+# Edit PLAYER_NAMES, then render
+python -m src.run_demo --match sut-mla --start_ts 1:04:48 --duration_sec 16
+```
 
 ## Dataset
 
@@ -173,5 +198,5 @@ python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 
 
 - **Team classification** all 16 matches labeled; struggles on ~6 where jersey colors are similar or lighting is difficult (night games, oblique cameras). Majority vote per track reduces label-switch errors but ID swaps from long occlusions can still cause systematic misclassification.
 - **Referee/GK filtering** is weak — refs often cluster with one team. Future fix: use pitch position via homography
-- **Pitch homography** averages 71% coverage; night games and oblique cameras remain challenging. No camera motion estimation yet — each frame is processed independently.
+- **Pitch homography** averages 71% coverage on raw PnLCalib v2; night games and oblique cameras remain challenging. Optical-flow propagation and manual seeds are wired in as fallbacks but the per-frame drift / wrong-overlay rate on demo clips is still high — actively being diagnosed via the GT iteration loop in `04_demo_video.ipynb`.
 - **ars-dec source video** has a ~3:14 recording gap at the start of the second half
