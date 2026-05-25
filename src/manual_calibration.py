@@ -765,14 +765,21 @@ def build_line_labeling_widget(
     btn_clear = widgets.Button(description="Clear all", icon="trash",
                                 button_style="warning",
                                 layout=widgets.Layout(width="auto"))
+    btn_delete = widgets.Button(description="Delete saved",
+                                icon="times-circle",
+                                button_style="danger",
+                                layout=widgets.Layout(width="auto"))
     btn_save = widgets.Button(description="Save", icon="save",
                                 button_style="success",
                                 layout=widgets.Layout(width="auto"))
 
-    fig, (ax_img, ax_pitch) = plt.subplots(
-        1, 2, figsize=(15, 5),
-        gridspec_kw={"width_ratios": [W_img / H_img, 1.4]},
-    )
+    # plt.ioff() suppresses ipympl auto-display so the canvas only shows where
+    # we explicitly embed it (in the returned VBox).
+    with plt.ioff():
+        fig, (ax_img, ax_pitch) = plt.subplots(
+            1, 2, figsize=(17, 6),
+            gridspec_kw={"width_ratios": [W_img / H_img, 1.1]},
+        )
     fig.canvas.header_visible = False
     fig.canvas.toolbar_visible = False
     fig.canvas.footer_visible = False
@@ -781,6 +788,10 @@ def build_line_labeling_widget(
     ax_img.imshow(rgb)
     ax_img.set_xticks([])
     ax_img.set_yticks([])
+    # Clamp the axis to the image; otherwise cyan-preview lines that project
+    # far off-screen stretch the axis and shrink the image to a thumbnail.
+    ax_img.set_xlim(0, W_img)
+    ax_img.set_ylim(H_img, 0)
     ax_img.set_title(f"{slug}  frame {frame_number}  —  drag a line, or tap a "
                       "named intersection point")
 
@@ -1002,10 +1013,31 @@ def build_line_labeling_widget(
         status.value = (f"<b>Saved</b> {n_total} correspondences to "
                         f"{path.name}  —  alignment error {err:.1f} px.")
 
+    def _on_delete(_b):
+        # Remove the saved GT for this frame entirely. Use case: user opened
+        # an old calibration that's wrong, doesn't want to re-do this frame,
+        # and needs the renderer to skip past it instead of seeding from junk.
+        path = calibration_path(slug, frame_number)
+        existed = path.exists()
+        if existed:
+            path.unlink()
+        line_corrs.clear()
+        point_corrs.clear()
+        add_order.clear()
+        _redraw_image_overlay()
+        _redraw_pitch()
+        if existed:
+            status.value = (f"<b>Deleted</b> {path.name}. This frame is no "
+                            "longer a manual seed.")
+        else:
+            status.value = ("<i>No saved calibration to delete for this "
+                            "frame.</i>")
+
     line_dd.observe(_on_dropdown, names="value")
     point_dd.observe(_on_dropdown, names="value")
     btn_remove.on_click(_on_remove)
     btn_clear.on_click(_on_clear)
+    btn_delete.on_click(_on_delete)
     btn_save.on_click(_on_save)
 
     _redraw_image_overlay()
@@ -1013,8 +1045,9 @@ def build_line_labeling_widget(
     _update_status()
 
     return widgets.VBox([
+        fig.canvas,
         widgets.HBox([line_dd, point_dd]),
-        widgets.HBox([btn_remove, btn_clear, btn_save]),
+        widgets.HBox([btn_remove, btn_clear, btn_delete, btn_save]),
         status,
     ])
 
@@ -1057,6 +1090,7 @@ def build_line_adjust_widget(
 
     H_img, W_img = frame.shape[:2]
     P_arr = np.asarray(initial_P, dtype=np.float64)
+    VIEW_MARGIN_PX = 24.0   # inset so clipped handles aren't flush against the frame edge
 
     def _project_world_pt(wx: float, wy: float) -> Optional[Tuple[float, float]]:
         p = P_arr @ np.array([
@@ -1066,34 +1100,124 @@ def build_line_adjust_widget(
             return None
         return (float(p[0] / p[2]), float(p[1] / p[2]))
 
-    # state[name] = {"image": ((p1x, p1y), (p2x, p2y)), "confirmed": bool}
-    # Insertion order is preserved (Python 3.7+) — used for stable colours
-    # and "remove last" semantics.
+    def _clip_to_view(
+        p1: Tuple[float, float], p2: Tuple[float, float],
+    ) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        """Liang-Barsky clip of the segment p1-p2 to the inset frame rectangle.
+
+        Returned endpoints lie ON the same image line (same cross-product), so
+        the homography constraint is preserved. Returns ``None`` if the segment
+        misses the frame entirely. If both endpoints are already inside, they
+        are passed through unchanged so the user-visible behaviour matches the
+        old widget for typical wide shots.
+        """
+        x0, y0 = p1
+        x1, y1 = p2
+        xmin, xmax = VIEW_MARGIN_PX, W_img - VIEW_MARGIN_PX
+        ymin, ymax = VIEW_MARGIN_PX, H_img - VIEW_MARGIN_PX
+        if (xmin <= x0 <= xmax and ymin <= y0 <= ymax
+                and xmin <= x1 <= xmax and ymin <= y1 <= ymax):
+            return (p1, p2)
+        dx, dy = x1 - x0, y1 - y0
+        ps = (-dx, dx, -dy, dy)
+        qs = (x0 - xmin, xmax - x0, y0 - ymin, ymax - y0)
+        u1, u2 = 0.0, 1.0
+        for pi, qi in zip(ps, qs):
+            if abs(pi) < 1e-9:
+                if qi < 0:
+                    return None
+                continue
+            t = qi / pi
+            if pi < 0:
+                if t > u1:
+                    u1 = t
+            else:
+                if t < u2:
+                    u2 = t
+        if u1 > u2:
+            return None
+        return ((x0 + u1 * dx, y0 + u1 * dy),
+                (x0 + u2 * dx, y0 + u2 * dy))
+
+    # state[name] = {"image": ((p1x, p1y), (p2x, p2y)),
+    #                "confirmed": bool, "visible": bool}
+    #
+    # All projectable lines are stored — including ones whose visible portion
+    # misses the frame ("visible=False"). Off-frame lines are silently retained
+    # at the initial-P projection so they participate in the SVD fit; this is
+    # what carries PnLCalib's off-halfway information through user nudges.
+    # Without this, fitting from only the visible-and-clickable lines on a
+    # wide-center frame is rank-degenerate in the x-direction (every visible
+    # constraint sits on the halfway world line).
+    #
+    # Default ``confirmed=True`` so the user only has to drag the lines they
+    # see and disagree with; everything else (visible-but-OK plus off-frame)
+    # contributes to the regularised fit by default.
     state: Dict[str, Dict[str, Any]] = {}
     for name, (w1, w2) in NAMED_PITCH_LINES.items():
         i1 = _project_world_pt(*w1)
         i2 = _project_world_pt(*w2)
         if i1 is None or i2 is None:
-            continue
-        state[name] = {"image": (i1, i2), "confirmed": False}
+            continue   # behind the camera plane — line equation is undefined
+        clipped = _clip_to_view(i1, i2)
+        if clipped is None:
+            # Off-frame: keep the raw projected endpoints (line equation is
+            # still well-defined) but mark invisible — no handles, no draw.
+            state[name] = {"image": (i1, i2), "confirmed": True,
+                           "visible": False}
+        else:
+            state[name] = {"image": clipped, "confirmed": True,
+                           "visible": True}
 
-    # Replay any previously-saved edits from a prior session.
+    # Tapped points (named arc/spot landmarks). Parallel to ``state`` for lines.
+    # Each entry: (name, world_xy, image_xy). Used when the visible frame
+    # exposes <4 named pitch lines — e.g. wide center shots that only show
+    # halfway + touchlines. Three lines + two halfway∩CC intersections is a
+    # well-conditioned 5-correspondence fit.
+    point_corrs: List[Tuple[str, Tuple[float, float], Tuple[float, float]]] = []
+
+    # Replay any previously-saved edits from a prior session. Saved entries
+    # always overwrite the initial-P projection and stay confirmed; visibility
+    # is recomputed from the loaded endpoints in case the user dragged a
+    # handle to a frame edge.
     if existing is not None:
         for entry in existing.line_correspondences or []:
             nm = entry["line_name"]
             if nm not in state:
                 continue
             (p1, p2) = entry["image_endpoints"]
-            state[nm]["image"] = ((float(p1[0]), float(p1[1])),
-                                   (float(p2[0]), float(p2[1])))
+            ep1 = (float(p1[0]), float(p1[1]))
+            ep2 = (float(p2[0]), float(p2[1]))
+            state[nm]["image"] = (ep1, ep2)
             state[nm]["confirmed"] = True
+            inside = (
+                0 <= ep1[0] <= W_img and 0 <= ep1[1] <= H_img
+                and 0 <= ep2[0] <= W_img and 0 <= ep2[1] <= H_img
+            )
+            state[nm]["visible"] = inside
+        for name, pit, img in existing.correspondences or []:
+            if name in ARC_INTERSECTION_POINTS:
+                point_corrs.append((name,
+                                    (float(pit[0]), float(pit[1])),
+                                    (float(img[0]), float(img[1]))))
 
+    point_dd = widgets.Dropdown(
+        options=list(ARC_INTERSECTION_POINTS.keys()),
+        value=list(ARC_INTERSECTION_POINTS.keys())[0],
+        description="Point:",
+        layout=widgets.Layout(width="280px"),
+    )
     btn_confirm_all = widgets.Button(
-        description="Confirm all", icon="check",
+        description="Re-include all", icon="check",
         layout=widgets.Layout(width="auto"),
     )
     btn_reset = widgets.Button(
-        description="Reset", icon="undo", button_style="warning",
+        description="Reset to PnLCalib", icon="undo", button_style="warning",
+        layout=widgets.Layout(width="auto"),
+    )
+    btn_delete = widgets.Button(
+        description="Delete saved", icon="times-circle",
+        button_style="danger",
         layout=widgets.Layout(width="auto"),
     )
     btn_save = widgets.Button(
@@ -1102,7 +1226,12 @@ def build_line_adjust_widget(
     )
     status = widgets.HTML()
 
-    fig, ax = plt.subplots(figsize=(14, 7.5))
+    # plt.ioff() suppresses ipympl auto-display so the canvas only shows where
+    # we explicitly embed it (in the returned VBox). Without this, the figure
+    # leaks to the calling cell's output area and the navigator's clear+rebuild
+    # cycle can't replace it.
+    with plt.ioff():
+        fig, ax = plt.subplots(figsize=(14, 7.5))
     fig.canvas.header_visible = False
     fig.canvas.toolbar_visible = False
     fig.canvas.footer_visible = False
@@ -1113,8 +1242,8 @@ def build_line_adjust_widget(
     ax.set_yticks([])
     ax.set_xlim(0, W_img)
     ax.set_ylim(H_img, 0)
-    ax.set_title(f"{slug}  frame {frame_number}  —  click line to confirm, "
-                  "drag endpoint to adjust")
+    ax.set_title(f"{slug}  frame {frame_number}  —  every line is in the fit; "
+                  "drag handles to fix wrong ones, right-click to exclude")
 
     drag_state: Dict[str, Any] = {"line": None, "endpoint": 0}
     LINE_COLORS = plt.cm.tab10.colors
@@ -1131,10 +1260,16 @@ def build_line_adjust_widget(
 
     def _current_h() -> Optional[np.ndarray]:
         corrs = _confirmed_corrs()
-        if len(corrs) < 4:
+        n_l, n_p = len(corrs), len(point_corrs)
+        # Pure points need 4; any lines bumps the minimum to 5 total.
+        need = 4 if n_l == 0 else 5
+        if n_l + n_p < need:
             return None
-        return homography_from_line_pairs(
-            [c[1] for c in corrs], [c[2] for c in corrs],
+        return homography_from_lines_and_points(
+            [c[1] for c in corrs],
+            [c[2] for c in corrs],
+            [c[2] for c in point_corrs],
+            [c[1] for c in point_corrs],
         )
 
     def _redraw():
@@ -1145,6 +1280,8 @@ def build_line_adjust_widget(
             tx.remove()
 
         for i, (name, st) in enumerate(state.items()):
+            if not st.get("visible", True):
+                continue   # off-frame: in fit, but no on-screen presence
             (x0, y0), (x1, y1) = st["image"]
             if st["confirmed"]:
                 color = LINE_COLORS[i % len(LINE_COLORS)]
@@ -1161,7 +1298,16 @@ def build_line_adjust_widget(
                 ax.plot([x0, x1], [y0, y1], "-", color="gray",
                         lw=1.0, alpha=0.4)
 
-        # Live H preview, once 4+ lines are confirmed.
+        # Tapped points (offset color range so they don't clash with line colors).
+        for j, (name, _w, (px, py)) in enumerate(point_corrs):
+            color = LINE_COLORS[(len(state) + j) % len(LINE_COLORS)]
+            ax.plot(px, py, "o", color=color, markersize=11,
+                    markeredgecolor="white", markeredgewidth=1.8)
+            ax.annotate(name, (px, py), color=color, fontsize=8,
+                        xytext=(8, -8), textcoords="offset points",
+                        fontweight="bold")
+
+        # Live H preview, once enough constraints are confirmed.
         H_fit = _current_h()
         if H_fit is not None:
             try:
@@ -1188,29 +1334,37 @@ def build_line_adjust_widget(
 
     def _update_status():
         n_conf = sum(1 for st in state.values() if st["confirmed"])
+        n_conf_vis = sum(1 for st in state.values()
+                         if st["confirmed"] and st.get("visible", True))
+        n_conf_hidden = n_conf - n_conf_vis
         n_total = len(state)
-        if n_conf < 4:
+        n_p = len(point_corrs)
+        need = 4 if n_conf == 0 else 5
+        n_have = n_conf + n_p
+        if n_have < need:
             status.value = (
-                f"<b>{n_conf}/{n_total}</b> lines confirmed — need at least "
-                "4 for a fit. Click on lines that already sit on painted "
-                "pitch markings; drag any that are off."
+                f"<b>{n_conf}/{n_total}</b> lines in fit "
+                f"({n_conf_vis} visible + {n_conf_hidden} off-frame), "
+                f"<b>{n_p}</b> point(s) — need at least {need} total."
             )
             return
         H_fit = _current_h()
         if H_fit is None:
             status.value = (
-                f"<b>{n_conf}</b> lines confirmed — degenerate "
-                "configuration. Confirm a line in a different direction."
+                f"<b>{n_have}</b> correspondences — degenerate configuration. "
+                "Add a line/point in a different direction."
             )
             return
         corrs = _confirmed_corrs()
-        err = line_alignment_error_px(
+        err = (line_alignment_error_px(
             [c[1] for c in corrs], [c[2] for c in corrs], H_fit,
-        )
+        ) if corrs else 0.0)
         color = "limegreen" if err < 5 else ("orange" if err < 15 else "red")
         status.value = (
-            f"<b>{n_conf}/{n_total}</b> lines confirmed — mean line distance: "
-            f"<span style='color:{color}'>{err:.1f} px</span>"
+            f"<b>{n_conf}</b> lines in fit "
+            f"({n_conf_vis} visible + {n_conf_hidden} off-frame anchoring "
+            f"PnLCalib's prior) + <b>{n_p}</b> point(s) — "
+            f"line residual: <span style='color:{color}'>{err:.1f} px</span>"
         )
 
     def _find_handle_at(x: float, y: float) -> Optional[Tuple[str, int]]:
@@ -1228,13 +1382,48 @@ def build_line_adjust_widget(
         return best
 
     def _find_line_near(x: float, y: float) -> Optional[str]:
-        """Nearest unconfirmed line to (x, y) within line_pick_px (perpendicular
-        distance to the line, ignoring whether the foot of the perpendicular
-        lands inside the rendered segment — long lines often extend off-screen)."""
+        """Nearest unconfirmed VISIBLE line to (x, y) within line_pick_px.
+
+        Used by left-click-to-(re)confirm. Off-frame lines never reach this
+        path because they're always pre-confirmed and have no visual handle.
+        """
         best: Optional[str] = None
         best_d = line_pick_px
         for name, st in state.items():
-            if st["confirmed"]:
+            if st["confirmed"] or not st.get("visible", True):
+                continue
+            (x0, y0), (x1, y1) = st["image"]
+            dx, dy = x1 - x0, y1 - y0
+            seg_len = float(np.hypot(dx, dy))
+            if seg_len < 1e-6:
+                continue
+            d = abs((x - x0) * dy - (y - y0) * dx) / seg_len
+            if d < best_d:
+                best = name
+                best_d = d
+        return best
+
+    def _find_point_at(x: float, y: float) -> Optional[int]:
+        """Index of nearest tapped point to (x, y) within handle_radius_px."""
+        best: Optional[int] = None
+        best_d2 = handle_radius_px ** 2
+        for j, (_n, _w, (px, py)) in enumerate(point_corrs):
+            d2 = (px - x) ** 2 + (py - y) ** 2
+            if d2 < best_d2:
+                best = j
+                best_d2 = d2
+        return best
+
+    def _find_confirmed_line_near(x: float, y: float) -> Optional[str]:
+        """Nearest confirmed VISIBLE line whose body passes within ~1.5*line_pick_px of (x, y).
+
+        Off-frame lines have no on-screen presence, so they can't be picked
+        by mouse — they stay confirmed (or get cleared via Reset).
+        """
+        best: Optional[str] = None
+        best_d = line_pick_px * 1.5
+        for name, st in state.items():
+            if not st["confirmed"] or not st.get("visible", True):
                 continue
             (x0, y0), (x1, y1) = st["image"]
             dx, dy = x1 - x0, y1 - y0
@@ -1251,6 +1440,30 @@ def build_line_adjust_widget(
         if event.inaxes is not ax or event.xdata is None:
             return
         x, y = float(event.xdata), float(event.ydata)
+
+        # Right-click: remove. Tapped points first (more specific), then
+        # confirmed-line bodies. The line is reset to its initial pipeline
+        # projection so it goes back to the gray ghost state.
+        if getattr(event, "button", 1) == 3:
+            pt_idx = _find_point_at(x, y)
+            if pt_idx is not None:
+                point_corrs.pop(pt_idx)
+                _redraw()
+                _update_status()
+                return
+            cl = _find_confirmed_line_near(x, y)
+            if cl is not None:
+                state[cl]["confirmed"] = False
+                i1 = _project_world_pt(*NAMED_PITCH_LINES[cl][0])
+                i2 = _project_world_pt(*NAMED_PITCH_LINES[cl][1])
+                if i1 is not None and i2 is not None:
+                    clipped = _clip_to_view(i1, i2)
+                    if clipped is not None:
+                        state[cl]["image"] = clipped
+                _redraw()
+                _update_status()
+            return
+
         # Confirmed-line handles win over line-clicks.
         h = _find_handle_at(x, y)
         if h is not None:
@@ -1261,6 +1474,24 @@ def build_line_adjust_widget(
             state[line]["confirmed"] = True
             _redraw()
             _update_status()
+            return
+        # Empty area — point semantics: click an existing point to remove it,
+        # otherwise add the dropdown's selected point at the click location.
+        pt_idx = _find_point_at(x, y)
+        if pt_idx is not None:
+            point_corrs.pop(pt_idx)
+        else:
+            name = point_dd.value
+            point_corrs[:] = [c for c in point_corrs if c[0] != name]
+            point_corrs.append((name, ARC_INTERSECTION_POINTS[name], (x, y)))
+            # Auto-advance to the next un-tapped point name.
+            used = {c[0] for c in point_corrs}
+            for nm in ARC_INTERSECTION_POINTS:
+                if nm not in used:
+                    point_dd.value = nm
+                    break
+        _redraw()
+        _update_status()
 
     def _on_motion(event):
         if drag_state["line"] is None or event.inaxes is not ax:
@@ -1291,49 +1522,85 @@ def build_line_adjust_widget(
         _update_status()
 
     def _on_reset(_b):
+        # "Reset to PnLCalib": re-project every line from the initial P,
+        # discard tapped points, and re-arm everything as confirmed.
+        point_corrs.clear()
         for name, st in state.items():
             i1 = _project_world_pt(*NAMED_PITCH_LINES[name][0])
             i2 = _project_world_pt(*NAMED_PITCH_LINES[name][1])
             if i1 is None or i2 is None:
                 continue
-            st["image"] = (i1, i2)
-            st["confirmed"] = False
+            clipped = _clip_to_view(i1, i2)
+            if clipped is None:
+                st["image"] = (i1, i2)
+                st["visible"] = False
+            else:
+                st["image"] = clipped
+                st["visible"] = True
+            st["confirmed"] = True
         _redraw()
         _update_status()
 
     def _on_save(_b):
         corrs = _confirmed_corrs()
-        if len(corrs) < 4:
+        n_l, n_p = len(corrs), len(point_corrs)
+        need = 4 if n_l == 0 else 5
+        if n_l + n_p < need:
             status.value = (
-                f"<span style='color:red'>Need at least 4 confirmed lines "
-                f"(have {len(corrs)}).</span>"
+                f"<span style='color:red'>Need at least {need} correspondences "
+                f"(have {n_l} lines + {n_p} points).</span>"
             )
             return
         H_fit = _current_h()
         if H_fit is None:
             status.value = (
                 "<span style='color:red'>Configuration is degenerate — "
-                "confirm a line in a different direction.</span>"
+                "add a line or point in a different direction.</span>"
             )
             return
-        path = save_line_calibration(slug, frame_number, W_img, H_img, corrs)
-        err = line_alignment_error_px(
-            [c[1] for c in corrs], [c[2] for c in corrs], H_fit,
+        path = save_line_calibration(
+            slug, frame_number, W_img, H_img, corrs, point_corrs,
         )
+        err = (line_alignment_error_px(
+            [c[1] for c in corrs], [c[2] for c in corrs], H_fit,
+        ) if corrs else 0.0)
         status.value = (
-            f"<b>Saved</b> {len(corrs)} lines to {path.name}  —  "
+            f"<b>Saved</b> {n_l} lines + {n_p} points to {path.name}  —  "
             f"alignment error {err:.1f} px."
         )
 
+    def _on_delete(_b):
+        # Remove the saved GT for this frame entirely (file system + state).
+        # Doesn't reset the on-screen overlay back to PnLCalib's projection;
+        # that's what "Reset to PnLCalib" is for. Just unlinks the file so
+        # the renderer no longer treats this frame as a manual seed.
+        path = calibration_path(slug, frame_number)
+        existed = path.exists()
+        if existed:
+            path.unlink()
+        point_corrs.clear()
+        for st in state.values():
+            st["confirmed"] = False
+        _redraw()
+        if existed:
+            status.value = (f"<b>Deleted</b> {path.name}. This frame is no "
+                            "longer a manual seed.")
+        else:
+            status.value = ("<i>No saved calibration to delete for this "
+                            "frame.</i>")
+
     btn_confirm_all.on_click(_on_confirm_all)
     btn_reset.on_click(_on_reset)
+    btn_delete.on_click(_on_delete)
     btn_save.on_click(_on_save)
 
     _redraw()
     _update_status()
 
     return widgets.VBox([
-        widgets.HBox([btn_confirm_all, btn_reset, btn_save]),
+        fig.canvas,
+        widgets.HBox([point_dd]),
+        widgets.HBox([btn_confirm_all, btn_reset, btn_delete, btn_save]),
         status,
     ])
 
