@@ -5,7 +5,8 @@ videos/
 output/
 
 # Training images (large, labels + data.yaml ARE tracked)
-data/object_detection/images/
+dataset/
+data/
 *.cache
 
 # Model weights
