@@ -36,6 +36,7 @@ import pandas as pd
 from .config import Config
 from .game_state import (GameState, trusted_frame_mask, adaptive_conf_min)
 from .ball_tracker import track_ball
+from .roles import infer_attack_direction, identify_goalkeepers
 
 # ── Tunables (metres / frames) ───────────────────────────────────────────────
 # Homography trust gate: see game_state.trusted_frame_mask — wide shot AND
@@ -144,16 +145,30 @@ def dead_ball_frames(ball: pd.DataFrame) -> set:
     return dead
 
 
+def _effective_players(gs: GameState, trusted: set,
+                       team_override: Optional[dict]) -> pd.DataFrame:
+    """Players eligible for possession on trusted frames. ``team_override``
+    (track_id → team) folds goalkeepers in: GKs are classified 'Other' by the
+    kit classifier and were invisible to possession — the golden set measured
+    the GK build-up pass as a false negative."""
+    pl = gs.players
+    pl = pl[pl.pitch_x.notna() & pl.frame.isin(trusted)]
+    if team_override:
+        pl = pl.copy()
+        eff = pl["track_id"].map(team_override)
+        pl["team_id"] = eff.fillna(pl["team_id"]).astype(int)
+    return pl[pl.team_id.isin([0, 1])]
+
+
 def carrier_per_frame(gs: GameState, ball: pd.DataFrame,
                       conf_min: Optional[float] = None,
-                      dead: Optional[set] = None) -> dict:
+                      dead: Optional[set] = None,
+                      team_override: Optional[dict] = None) -> dict:
     """{frame: (track_id, team)} for trusted frames where a player controls the ball."""
     if dead is None:
         dead = dead_ball_frames(ball)
     trusted = set(gs.frames.loc[trusted_frame_mask(gs, conf_min), "frame"].astype(int))
-    # Index players by frame once (trusted frames only).
-    pl = gs.players
-    pl = pl[(pl.team_id.isin([0, 1])) & pl.pitch_x.notna() & pl.frame.isin(trusted)]
+    pl = _effective_players(gs, trusted, team_override)
     by_frame: dict[int, list] = defaultdict(list)
     for r in pl.itertuples(index=False):
         by_frame[r.frame].append((r.track_id, r.team_id, r.pitch_x, r.pitch_y))
@@ -193,7 +208,8 @@ def carrier_per_frame(gs: GameState, ball: pd.DataFrame,
 
 def detect_kicks(gs: GameState, ball: pd.DataFrame,
                  conf_min: Optional[float] = None,
-                 dead: Optional[set] = None) -> list[tuple]:
+                 dead: Optional[set] = None,
+                 team_override: Optional[dict] = None) -> list[tuple]:
     """[(frame, tid, team)] where the ball's velocity jumps by >= KICK_DV_MS
     with a team-0/1 player within KICK_RADIUS_M — evidence someone kicked it.
     Only frames where the jump lands on a detected/bridged estimate qualify
@@ -203,9 +219,7 @@ def detect_kicks(gs: GameState, ball: pd.DataFrame,
     trusted = set(gs.frames.loc[trusted_frame_mask(gs, conf_min),
                                 "frame"].astype(int))
     trusted -= dead
-    pl = gs.players
-    pl = pl[(pl.team_id.isin([0, 1])) & pl.pitch_x.notna()
-            & pl.frame.isin(trusted)]
+    pl = _effective_players(gs, trusted, team_override)
     by_frame: dict[int, list] = defaultdict(list)
     for r in pl.itertuples(index=False):
         by_frame[r.frame].append((r.track_id, r.team_id, r.pitch_x, r.pitch_y))
@@ -326,17 +340,26 @@ def _dist(a, b) -> float:
     return float(np.hypot(a[0] - b[0], a[1] - b[1]))
 
 
-def _shot_after(touch: Touch, ball: pd.DataFrame) -> Optional[tuple]:
-    """If the ball rockets toward a goal mouth right after this touch, return
-    (end_xy, outcome); else None. Direction-agnostic — attributed to the toucher."""
+SHOT_MAX_RANGE_M = 40.0       # touches further than this from the target goal
+
+
+def _shot_after(touch: Touch, ball: pd.DataFrame,
+                goal_x: Optional[float] = None) -> Optional[tuple]:
+    """If the ball rockets toward the attacked goal mouth right after this
+    touch, return (end_xy, outcome); else None.
+
+    ``goal_x`` is the goal the touching team ATTACKS (from
+    roles.infer_attack_direction). The old fallback guessed "whichever end is
+    nearer", which turned defensive clearances near a team's own goal into
+    'shots' at it."""
     seg = ball[(ball.frame >= touch.f_end) & (ball.frame <= touch.f_end + 40)]
     seg = seg.dropna(subset=["bx", "by"])
     if len(seg) < 3:
         return None
     start = touch.xy_end
-    # Which goal is the touch attacking? Whichever end it's nearer to.
-    goal_x = PITCH_L if start[0] >= PITCH_L / 2 else 0.0
-    if not (start[0] >= SHOT_FINAL_THIRD_M or start[0] <= PITCH_L - SHOT_FINAL_THIRD_M):
+    if goal_x is None:
+        goal_x = PITCH_L if start[0] >= PITCH_L / 2 else 0.0
+    if abs(goal_x - start[0]) > SHOT_MAX_RANGE_M:
         return None
     end = (seg.iloc[-1]["bx"], seg.iloc[-1]["by"])
     max_speed = float(seg["speed"].max())
@@ -373,8 +396,10 @@ def detect_events(gs: GameState,
         conf_min = adaptive_conf_min(gs)
     ball = ball_series(gs, conf_min)
     dead = dead_ball_frames(ball)
-    carrier = carrier_per_frame(gs, ball, conf_min, dead)
-    kicks = detect_kicks(gs, ball, conf_min, dead)
+    directions = infer_attack_direction(gs, conf_min)
+    gk_map = identify_goalkeepers(gs, directions)
+    carrier = carrier_per_frame(gs, ball, conf_min, dead, gk_map)
+    kicks = detect_kicks(gs, ball, conf_min, dead, gk_map)
     touches = build_touches(gs, carrier, ball, kicks)
     spells = possession_spells(touches)
 
@@ -409,8 +434,8 @@ def detect_events(gs: GameState,
                 {"end_location": list(t.xy_end),
                  "length": round(_dist(t.xy_start, t.xy_end), 2)})
 
-        # Shot off this touch.
-        shot = _shot_after(t, ball)
+        # Shot off this touch (toward the goal this team actually attacks).
+        shot = _shot_after(t, ball, directions.goal_x(t.team))
         if shot is not None:
             end_xy, outcome = shot
             add(t.f_end, "Shot", t.team, t.track_id, t.xy_end,
@@ -439,7 +464,12 @@ def detect_events(gs: GameState,
     events.sort(key=lambda e: (e.frame, e.index))
     for k, e in enumerate(events):
         e.index = k
-    return events, _summary(events, carrier, gs, conf_min)
+    summary = _summary(events, carrier, gs, conf_min)
+    summary["attack_ltr"] = {int(k): bool(v)
+                             for k, v in directions.attack_ltr.items()}
+    summary["attack_direction_confidence"] = round(directions.confidence, 3)
+    summary["gk_tracks"] = {int(k): int(v) for k, v in gk_map.items()}
+    return events, summary
 
 
 def _tsec(gs: GameState, frame: int) -> float:
@@ -522,13 +552,25 @@ def export_events(events: list[Event], slug: str, summary: dict,
     import uuid
     Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # StatsBomb convention: every event's coordinates are given from the
+    # acting team's perspective, attacking left→right (toward x=120). Raw
+    # pitch coordinates are flipped for the team attacking right-to-left.
+    attack_ltr = {int(k): bool(v)
+                  for k, v in (summary.get("attack_ltr") or {}).items()}
+    gk_tracks = {int(k) for k in (summary.get("gk_tracks") or {})}
+
+    def norm(xy_sb: list, team: int) -> list:
+        if attack_ltr and not attack_ltr.get(int(team), True):
+            return [round(120.0 - xy_sb[0], 2), round(80.0 - xy_sb[1], 2)]
+        return xy_sb
+
     out = []
     possession = 1
     possession_team = events[0].team if events else 0
 
     def base(e, etype, team, player, loc, t=None):
         ts, minute, second = _sb_timestamp(e.time_sec if t is None else t)
-        return {
+        rec = {
             "id": str(uuid.uuid4()), "index": len(out) + 1,
             "period": e.period, "timestamp": ts,
             "minute": minute, "second": second,
@@ -536,9 +578,12 @@ def export_events(events: list[Event], slug: str, summary: dict,
             "possession_team": _sb_team(possession_team, slug),
             "play_pattern": SB_PLAY_PATTERN,
             "team": _sb_team(team, slug), "player": _sb_player(player),
-            "location": _to_sb(loc),
+            "location": norm(_to_sb(loc), team),
             "frame": int(e.frame), "pitch_xy": [round(v, 2) for v in loc],
         }
+        if int(player) in gk_tracks:
+            rec["position"] = {"id": 1, "name": "Goalkeeper"}
+        return rec
 
     for e in events:
         if e.type == "Possession Change":
@@ -555,7 +600,7 @@ def export_events(events: list[Event], slug: str, summary: dict,
             dy = end[1] - e.location[1]
             p = {"length": round(float(np.hypot(dx, dy)) / PITCH_L * 120.0, 2),
                  "angle": round(float(np.arctan2(dy, dx)), 3),
-                 "end_location": _to_sb(end)}
+                 "end_location": norm(_to_sb(end), e.team)}
             if e.details.get("recipient") is not None:
                 p["recipient"] = _sb_player(e.details["recipient"])
             oc = e.details.get("outcome")
@@ -572,16 +617,16 @@ def export_events(events: list[Event], slug: str, summary: dict,
 
         if e.type == "Carry":
             rec = base(e, "Carry", e.team, e.player, e.location)
-            rec["carry"] = {"end_location":
-                            _to_sb(e.details.get("end_location", e.location))}
+            rec["carry"] = {"end_location": norm(
+                _to_sb(e.details.get("end_location", e.location)), e.team)}
             rec["duration"] = round(e.details.get("length", 0.0) / 4.0, 2)
             out.append(rec)
             continue
 
         if e.type == "Shot":
             rec = base(e, "Shot", e.team, e.player, e.location)
-            rec["shot"] = {"end_location":
-                           _to_sb(e.details.get("end_location", e.location)),
+            rec["shot"] = {"end_location": norm(
+                _to_sb(e.details.get("end_location", e.location)), e.team),
                            "outcome": {"id": 0, "name": "Unknown"}}
             out.append(rec)
 

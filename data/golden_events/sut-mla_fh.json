@@ -13,15 +13,18 @@
         {"tid": 15207, "team": 0, "f0": 31068, "f1": 31163},
         {"tid": 15503, "team": 0, "f0": 31190, "f1": 31198, "note": "throw-in"},
         {"tid": 15168, "team": 0, "f0": 31238, "f1": 31262, "note": "contested duel vs 15158"},
-        {"tid": 15158, "team": 1, "f0": 31368, "f1": 31374, "note": "collects loose ball, clears immediately"},
+        {"tid": 15590, "team": 0, "f0": 31340, "f1": 31372, "note": "Mladost GK (dark kit, new track id after 15300) collects the loose ball and clears - originally mislabeled as 15158; corrected after pixel adjudication of a system disagreement"},
         {"tid": 15622, "team": 0, "f0": 31415, "f1": 31440}
+      ],
+      "unknown_spans": [
+        {"f0": 31262, "f1": 31340, "note": "duel outcome / loose roll toward the GK"}
       ],
       "passes": [
         {"kick": 30855, "recv": 30903, "from": 15300, "to": 15168, "outcome": "complete", "note": "GK long clearance under pressure"},
         {"kick": 31016, "recv": 31068, "from": 15168, "to": 15207, "outcome": "complete"},
         {"kick": 31165, "recv": null, "from": 15207, "to": null, "outcome": "out", "note": "kicked out for throw-in"},
         {"kick": 31196, "recv": 31238, "from": 15503, "to": 15168, "outcome": "complete", "note": "throw-in"},
-        {"kick": 31372, "recv": 31415, "from": 15158, "to": 15622, "outcome": "turnover", "note": "SUT clearance straight to MLD"}
+        {"kick": 31371, "recv": 31415, "from": 15590, "to": 15622, "outcome": "complete", "note": "GK clearance upfield to a teammate (was mislabeled as a 15158 turnover; verified against pixels at f31366-31378)"}
       ]
     },
     {
