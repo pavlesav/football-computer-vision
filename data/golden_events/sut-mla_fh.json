@@ -1,0 +1,58 @@
+{
+  "slug": "sut-mla",
+  "period": 1,
+  "notes": "Hand-labeled by frame-stepping contact sheets (every 10 frames, crops centered on ball with track ids). Control intervals = who has the ball at their feet; 'loose' gaps are flight/scrambles. Pass kick/receive frames are +/-10 frames (labeling resolution). team: 0=Mladost(yellow) 1=Sutjeska(blue), -1=other/GK/unknown.",
+  "segments": [
+    {
+      "name": "segA_18min",
+      "f_start": 30458,
+      "f_end": 31458,
+      "control": [
+        {"tid": 15300, "team": -1, "f0": 30470, "f1": 30853, "note": "Mladost GK walks ball out (classified Other)"},
+        {"tid": 15168, "team": 0, "f0": 30903, "f1": 31013},
+        {"tid": 15207, "team": 0, "f0": 31068, "f1": 31163},
+        {"tid": 15503, "team": 0, "f0": 31190, "f1": 31198, "note": "throw-in"},
+        {"tid": 15168, "team": 0, "f0": 31238, "f1": 31262, "note": "contested duel vs 15158"},
+        {"tid": 15158, "team": 1, "f0": 31368, "f1": 31374, "note": "collects loose ball, clears immediately"},
+        {"tid": 15622, "team": 0, "f0": 31415, "f1": 31440}
+      ],
+      "passes": [
+        {"kick": 30855, "recv": 30903, "from": 15300, "to": 15168, "outcome": "complete", "note": "GK long clearance under pressure"},
+        {"kick": 31016, "recv": 31068, "from": 15168, "to": 15207, "outcome": "complete"},
+        {"kick": 31165, "recv": null, "from": 15207, "to": null, "outcome": "out", "note": "kicked out for throw-in"},
+        {"kick": 31196, "recv": 31238, "from": 15503, "to": 15168, "outcome": "complete", "note": "throw-in"},
+        {"kick": 31372, "recv": 31415, "from": 15158, "to": 15622, "outcome": "turnover", "note": "SUT clearance straight to MLD"}
+      ]
+    },
+    {
+      "name": "segB_37min",
+      "f_start": 59958,
+      "f_end": 60958,
+      "control": [
+        {"tid": 32550, "team": 1, "f0": 59975, "f1": 60003},
+        {"tid": 32721, "team": 1, "f0": 60028, "f1": 60103},
+        {"tid": 32896, "team": 1, "f0": 60245, "f1": 60280},
+        {"tid": 32951, "team": 1, "f0": 60308, "f1": 60330, "note": "brief, pressed"},
+        {"tid": 32873, "team": 1, "f0": 60378, "f1": 60440, "note": "contested duel vs 32863"},
+        {"tid": 33117, "team": 1, "f0": 60630, "f1": 60660, "note": "shields in scramble"},
+        {"tid": 33285, "team": 1, "f0": 60715, "f1": 60723, "note": "one-touch"},
+        {"tid": 33289, "team": 1, "f0": 60758, "f1": 60800},
+        {"tid": 33369, "team": 1, "f0": 60838, "f1": 60880}
+      ],
+      "unknown_spans": [
+        {"f0": 60140, "f1": 60240, "note": "aerial contest, ball invisible (high)"},
+        {"f0": 60320, "f1": 60378, "note": "tackle scramble after 32951 pressed"},
+        {"f0": 60445, "f1": 60515, "note": "high clearance, camera tilts up"},
+        {"f0": 60540, "f1": 60668, "note": "touchline scramble, brief touches incl 33224@60598"}
+      ],
+      "passes": [
+        {"kick": 60005, "recv": 60028, "from": 32550, "to": 32721, "outcome": "complete"},
+        {"kick": 60105, "recv": null, "from": 32721, "to": null, "outcome": "contested", "note": "long ball into aerial duel, SUT eventually retains"},
+        {"kick": 60283, "recv": 60308, "from": 32896, "to": 32951, "outcome": "complete"},
+        {"kick": 60443, "recv": null, "from": 32873, "to": null, "outcome": "contested", "note": "clearance high out of the duel (sheet note: 'cleared ~60443')"},
+        {"kick": 60720, "recv": 60758, "from": 33285, "to": 33289, "outcome": "complete"},
+        {"kick": 60803, "recv": 60838, "from": 33289, "to": 33369, "outcome": "complete"}
+      ]
+    }
+  ]
+}
