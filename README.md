@@ -37,8 +37,9 @@ Full-match broadcast video
 | Team Classification | Done | ResNet18 + PCA + KNN (k=5), 16/16 matches labeled |
 | Pitch Homography | In Progress | PnLCalib v2 + optical-flow + manual seeds, 71% avg coverage; per-frame drift being diagnosed via GT loop |
 | Game State | Done | Cache-once perception artifact (Parquet): players + ball candidates + camera per frame |
-| Ball Tracking | Done | Pitch-space Kalman filter + hindsight gap bridging over the game state; visually validated |
-| Event Detection | In Progress | Possession/passes/carries/shots working end-to-end on `sut-mla`; scaling to full halves next |
+| Ball Tracking | Done | Pitch-space Kalman filter + hindsight gap bridging; tuned via masked-detection eval |
+| Event Detection | Working | Golden-measured: pass precision 0.70 / recall 0.88 (sut-mla), 1.00/1.00 (bud-sut segment); full first half processed; StatsBomb-v4-shaped export, attack-normalized |
+| Roles & Identity | Working | Attack direction + GK possession integrated; track→meta-track consolidation + naming widget → named exports |
 | Demo Video | Done | Demo clip renderer with tracked players, names, speed/distance, minimap (`04_demo_video.ipynb`) |
 
 ## Project Structure
@@ -64,7 +65,12 @@ football-computer-vision/
 │   ├── game_state.py                  # Persisted per-frame game-state artifact (Parquet)
 │   ├── pipeline.py                    # PerceptionPipeline: perception once → output/game_state/{slug}/
 │   ├── ball_tracker.py                # Pitch-space Kalman ball tracker (analysis-side, no GPU)
-│   ├── events.py                      # Possession → touches → events → StatsBomb-lite JSON
+│   ├── events.py                      # Possession/kicks → touches → spells → StatsBomb-v4-shaped JSON
+│   ├── roles.py                       # Attack directions + goalkeeper identification (positional)
+│   ├── identity.py                    # Track consolidation + naming widget → real player names in exports
+│   ├── stabilize.py                   # Offline homography smoothing (removes overlay jitter)
+│   ├── golden_eval.py                 # Precision/recall vs hand-labeled golden event set
+│   ├── team_repair.py                 # Kit-hue audit of team labels (flags ID-swap suspects)
 │   └── render_game_state.py           # Annotated review MP4 rendered from the artifact (QC / judging tool)
 ├── models/                            # All models and weights
 │   ├── detection/weights/best.pt      # Fine-tuned YOLOv8m
@@ -248,4 +254,6 @@ python -m src.events --match sut-mla
 - **Referee/GK filtering** is weak — refs often cluster with one team. Future fix: use pitch position via homography
 - **Pitch homography** averages 71% coverage on raw PnLCalib v2; night games and oblique cameras remain challenging. Optical-flow propagation and manual seeds are wired in as fallbacks but the per-frame drift / wrong-overlay rate on demo clips is still high — actively being diagnosed via the GT iteration loop in `04_demo_video.ipynb`.
 - **Ball tracking** can only bridge gaps bounded by trusted detections; a blackout with no re-acquisition within 2.4 s loses the ball, and possession during it is honestly unknown (missed, not misattributed). Airborne balls project onto the pitch plane with overshoot while high.
+- **Shots/goals not yet trustworthy** — shot detection currently yields 0 after direction-aware validation removed nearest-goal artifacts; the planned scoreboard goal-oracle (score-digit OCR) will anchor goals and shot outcomes.
+- **One artifact window per match slug** — running a second window overwrites `output/game_state/{slug}/`; per-half restructure is the next milestone's first task.
 - **ars-dec source video** has a ~3:14 recording gap at the start of the second half
