@@ -559,6 +559,21 @@ def export_events(events: list[Event], slug: str, summary: dict,
                   for k, v in (summary.get("attack_ltr") or {}).items()}
     gk_tracks = {int(k) for k in (summary.get("gk_tracks") or {})}
 
+    # Real player names when the identity layer has them (src.identity:
+    # meta-track consolidation + the naming widget). Falls back to track ids.
+    from .identity import load_identity_map
+    idmap = load_identity_map(slug) or {}
+
+    def resolve_player(tid: int) -> dict:
+        info = idmap.get(int(tid))
+        if info:
+            name = info.get("name") or f"#{info.get('number')}"
+            rec = {"id": int(tid), "name": name}
+            if info.get("number") is not None:
+                rec["jersey_number"] = int(info["number"])
+            return rec
+        return _sb_player(tid)
+
     def norm(xy_sb: list, team: int) -> list:
         if attack_ltr and not attack_ltr.get(int(team), True):
             return [round(120.0 - xy_sb[0], 2), round(80.0 - xy_sb[1], 2)]
@@ -577,7 +592,7 @@ def export_events(events: list[Event], slug: str, summary: dict,
             "type": SB_TYPE[etype], "possession": possession,
             "possession_team": _sb_team(possession_team, slug),
             "play_pattern": SB_PLAY_PATTERN,
-            "team": _sb_team(team, slug), "player": _sb_player(player),
+            "team": _sb_team(team, slug), "player": resolve_player(player),
             "location": norm(_to_sb(loc), team),
             "frame": int(e.frame), "pitch_xy": [round(v, 2) for v in loc],
         }
@@ -602,7 +617,7 @@ def export_events(events: list[Event], slug: str, summary: dict,
                  "angle": round(float(np.arctan2(dy, dx)), 3),
                  "end_location": norm(_to_sb(end), e.team)}
             if e.details.get("recipient") is not None:
-                p["recipient"] = _sb_player(e.details["recipient"])
+                p["recipient"] = resolve_player(e.details["recipient"])
             oc = e.details.get("outcome")
             if oc in SB_PASS_OUTCOME:            # complete passes omit outcome
                 p["outcome"] = SB_PASS_OUTCOME[oc]

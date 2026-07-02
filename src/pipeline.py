@@ -316,6 +316,17 @@ class PerceptionPipeline:
         # Post-pass: track-level team assignment, joined back onto every row.
         print(f"[{self.slug}] classifying {len(track_embeddings)} tracks...")
         track_teams = self.clf.classify_tracks(track_embeddings)
+
+        # Persist mean appearance embeddings per track: identity consolidation
+        # (src.identity) is kinematics-only without them, which fragments on
+        # close-up-heavy halves. Saved so ReID upgrades need no perception re-run.
+        out_dir_early = Config.OUTPUT_GAME_STATE_DIR / self.slug
+        out_dir_early.mkdir(parents=True, exist_ok=True)
+        emb_ids = sorted(track_embeddings)
+        emb_mat = np.stack([np.mean(track_embeddings[t], axis=0)
+                            for t in emb_ids]) if emb_ids else np.zeros((0, 1))
+        np.savez_compressed(out_dir_early / "embeddings.npz",
+                            track_ids=np.array(emb_ids), embeddings=emb_mat)
         for fs in frame_states:
             for p in fs.players:
                 p.team_id = int(track_teams.get(p.track_id,

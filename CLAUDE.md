@@ -47,6 +47,8 @@ football-computer-vision/
 │   ├── pipeline.py                    # PerceptionPipeline: runs perception once → output/game_state/{slug}/
 │   ├── ball_tracker.py                # Pitch-space Kalman ball tracker over the game state (no GPU/video)
 │   ├── events.py                      # Possession/kicks → touches → spells → events → StatsBomb-v4-shaped JSON
+│   ├── roles.py                       # Attack direction (defensive-shape vote) + GK identification (positional signature)
+│   ├── identity.py                    # Track→meta-track consolidation + naming widget + data/identities/{slug}.json
 │   ├── team_repair.py                 # Kit-hue audit of track team labels (flip clear errors, flag ID-swap suspects)
 │   ├── stabilize.py                   # Offline homography smoothing (kills the 8Hz overlay jitter) + player-pos recompute
 │   ├── golden_eval.py                 # Score detected passes/carrier vs hand-labeled golden set (precision/recall)
