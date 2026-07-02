@@ -1,0 +1,35 @@
+{
+  "slug": "sut-mla",
+  "period": 1,
+  "notes": "Second labeling round (expansion): 47:00 stretch. Includes a ground-truthed BoT-SORT double ID swap: tracks 41047 (blue) and 41052 (yellow) crossed ~f74640 and exchanged players — from then on the 41052 box follows a BLUE player. Golden control uses the tracked id with the true team noted.",
+  "segments": [
+    {
+      "name": "segC_47min",
+      "f_start": 73958,
+      "f_end": 74958,
+      "control": [
+        {"tid": 40859, "team": 1, "f0": 74018, "f1": 74045, "note": "contested vs 40856"},
+        {"tid": 40848, "team": 1, "f0": 74088, "f1": 74160},
+        {"tid": 40853, "team": 1, "f0": 74198, "f1": 74265},
+        {"tid": 41047, "team": 1, "f0": 74338, "f1": 74470, "note": "dribble under press"},
+        {"tid": 40886, "team": 1, "f0": 74505, "f1": 74535},
+        {"tid": 41047, "team": 1, "f0": 74558, "f1": 74585},
+        {"tid": 40886, "team": 1, "f0": 74605, "f1": 74640},
+        {"tid": 41052, "team": 1, "f0": 74648, "f1": 74705, "note": "ID SWAP: box 41052 is on a blue player here; artifact team label says 0"}
+      ],
+      "unknown_spans": [
+        {"f0": 73958, "f1": 74015, "note": "loose ball chase"},
+        {"f0": 74470, "f1": 74505, "note": "tackle spill"},
+        {"f0": 74705, "f1": 74760, "note": "tackle + loose"},
+        {"f0": 74760, "f1": 74958, "note": "ball out of play / ball boy"}
+      ],
+      "passes": [
+        {"kick": 74163, "recv": 74198, "from": 40848, "to": 40853, "outcome": "complete"},
+        {"kick": 74265, "recv": 74338, "from": 40853, "to": 41047, "outcome": "complete", "note": "long switch"},
+        {"kick": 74535, "recv": 74558, "from": 40886, "to": 41047, "outcome": "complete"},
+        {"kick": 74585, "recv": 74608, "from": 41047, "to": 40886, "outcome": "complete", "note": "wall pass"},
+        {"kick": 74640, "recv": 74648, "from": 40886, "to": 41052, "outcome": "complete", "note": "receiver id is post-swap box"}
+      ]
+    }
+  ]
+}

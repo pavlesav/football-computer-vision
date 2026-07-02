@@ -1,0 +1,29 @@
+{
+  "slug": "bud-sut",
+  "period": 1,
+  "notes": "Cross-match golden segment (Buducnost striped = team0 / yellow boxes, Sutjeska white = team1 / blue boxes). Hard conditions: harsh sun/shadow band across midfield, a long aerial phase, and a genuine multi-ball dead-ball stretch (ball boy's spare ball is what the tracker follows while play is stopped).",
+  "segments": [
+    {
+      "name": "segD_bud_sut",
+      "f_start": 26483,
+      "f_end": 27483,
+      "control": [
+        {"tid": 4065, "team": 0, "f0": 26523, "f1": 26548},
+        {"tid": 4126, "team": 0, "f0": 26603, "f1": 26620},
+        {"tid": 3949, "team": 1, "f0": 26760, "f1": 26855, "note": "carries out of the scramble"}
+      ],
+      "unknown_spans": [
+        {"f0": 26483, "f1": 26518, "note": "loose ball rolling"},
+        {"f0": 26655, "f1": 26755, "note": "midfield duel + loose, deep shadow band"},
+        {"f0": 26870, "f1": 27003, "note": "long ball flight/chase, ball high"},
+        {"f0": 27003, "f1": 27015, "note": "rolling out near touchline"},
+        {"f0": 27015, "f1": 27483, "note": "OUT OF PLAY: throw-in never taken in segment; ball boy handles a spare ball the tracker follows; crowd shots from f27263"}
+      ],
+      "passes": [
+        {"kick": 26550, "recv": 26603, "from": 4065, "to": 4126, "outcome": "complete"},
+        {"kick": 26625, "recv": null, "from": 4126, "to": null, "outcome": "contested", "note": "upfield ball into contested arrival"},
+        {"kick": 26858, "recv": null, "from": 3949, "to": null, "outcome": "contested", "note": "long ball forward, outcome invisible"}
+      ]
+    }
+  ]
+}
