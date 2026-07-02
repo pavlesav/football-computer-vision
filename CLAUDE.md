@@ -42,7 +42,15 @@ football-computer-vision/
 │   ├── video_utils.py                 # Video I/O, clip extraction (ffmpeg)
 │   ├── dataset.py                     # Training data management, train/val split
 │   ├── run_pnlcalib_video.py          # PnLCalib homography on video clips
-│   └── run_demo.py                    # FSCG demo renderer: tracking + names + speed/distance + minimap
+│   ├── run_demo.py                    # Demo clip renderer: tracking + names + speed/distance + minimap (legacy showcase)
+│   ├── game_state.py                  # Persisted per-frame game-state artifact (Parquet) — the perception↔analysis boundary
+│   ├── pipeline.py                    # PerceptionPipeline: runs perception once → output/game_state/{slug}/
+│   ├── ball_tracker.py                # Pitch-space Kalman ball tracker over the game state (no GPU/video)
+│   ├── events.py                      # Possession/kicks → touches → spells → events → StatsBomb-v4-shaped JSON
+│   ├── team_repair.py                 # Kit-hue audit of track team labels (flip clear errors, flag ID-swap suspects)
+│   ├── stabilize.py                   # Offline homography smoothing (kills the 8Hz overlay jitter) + player-pos recompute
+│   ├── golden_eval.py                 # Score detected passes/carrier vs hand-labeled golden set (precision/recall)
+│   └── render_game_state.py           # Annotated review MP4 from the artifact (supports --start_sec/--duration_sec clips)
 ├── models/                            # All models and weights
 │   ├── detection/                     # Fine-tuned YOLOv8m (weights + training artifacts)
 │   │   ├── weights/best.pt           # Trained model weights
@@ -58,6 +66,7 @@ football-computer-vision/
 │       ├── config/                    # HRNet YAML configs
 │       └── weights/{SV_kp,SV_lines}   # Pretrained weights (~253MB each)
 ├── data/
+│   ├── golden_events/                 # Hand-labeled ground truth (control intervals + passes) for golden_eval
 │   ├── period_detection_results.json  # Cached period boundaries for all 16 matches
 │   ├── manual_calibration/            # {slug}_frame_{N:07d}.json — manual homography seeds for Tier-3 matches
 │   └── object_detection/              # Labeled training data for YOLO fine-tuning
@@ -69,12 +78,14 @@ football-computer-vision/
 ├── output/                            # All generated outputs (gitignored)
 │   ├── classifiers/                   # Per-game {slug}_classifier.pkl + {slug}_labels.npz
 │   ├── classifier_validation/         # Annotated 2-min clips for visual QC of team classification
-│   └── demo/                          # FSCG demo MP4s (`{slug}_{ts}_demo.mp4`, `{slug}_{ts}_discover.mp4`)
+│   ├── demo/                          # Demo MP4s (`{slug}_{ts}_demo.mp4`, `{slug}_{ts}_discover.mp4`)
+│   ├── game_state/{slug}/             # players/frames/ball parquet + meta.json (cache-once perception output)
+│   └── events/                        # {slug}_events.json — StatsBomb-lite event data
 ├── notebooks/
 │   ├── 01_team_classification.ipynb   # Per-game labeling widget → KNN classifier + labels.npz + review + validation
 │   ├── 02_homography.ipynb            # Homography visualization + model comparison
-│   ├── 03_event_detection.ipynb       # Event detection scaffold (passes, shots, possession)
-│   ├── 04_demo_video.ipynb            # FSCG demo render + label/calibrate/compare iteration loop
+│   ├── 03_event_detection.ipynb       # Load game state → detect_events → pass-map/possession QC → StatsBomb-lite export
+│   ├── 04_demo_video.ipynb            # Demo render + label/calibrate/compare iteration loop
 │   └── detection_training.ipynb       # YOLO training + error analysis
 ├── requirements.txt
 ├── CLAUDE.md
@@ -85,7 +96,7 @@ football-computer-vision/
 
 1. ~~**Broadcast analysis**~~ — Done. Unsupervised period detection works on all 16 matches (15 PASS, 1 WARN).
 2. **Pitch homography** — In progress. PnLCalib pretrained model + post-processing (v2), Lucas-Kanade optical-flow propagation (`camera_motion.py`), and manual seeds (`manual_calibration.py`) all wired into the runner. v2 averages 71% coverage across 16 matches. The demo notebook (`04_demo_video.ipynb`) added a label/calibrate/compare iteration loop with a line-adjust ground-truth widget seeded from the pipeline's own P. Next step: use that loop on a representative clip to diagnose the residual drift/wrong-overlay failures (PnLCalib output vs `refine_projection_to_lines` bias vs flow-propagated bad seed) and tighten whichever stage is responsible.
-3. **Event detection** — Ball position + player positions + team labels + pitch coords -> detect passes, shots, possession changes. Core deliverable. Blocked on homography.
+3. **Event detection** — Working at **full-half scale**. `src.pipeline` persists a per-frame **game state** (`output/game_state/{slug}/`); `src.events` derives possession/passes/carries/shots as StatsBomb-lite JSON. Milestone 2 (Kalman ball tracker) done; generalization validated on 3 matches (sut-mla, bud-sut, dec-mla); full sut-mla first half processed in ~3h50m GPU (`--pnl_stride 3`, 5.9x speedup at equal quality): **444 passes / ~65% completion / 51.7-48.3 possession / 7 shots** at 55.9% trusted coverage — plausible 1.CFL aggregates. Next: Milestone 4 correction UI, then batch remaining halves/matches. See `game_state.py` / `pipeline.py` / `ball_tracker.py` / `events.py` / `team_repair.py` / `render_game_state.py`.
 4. **Cross-shot player matching** — Re-identify players across camera cuts using team + pitch position (~70-80% automated, human corrects the rest).
 5. **Jersey number / player identity** — Semi-manual: human maps track clusters to squad lists. Full OCR is unreliable at broadcast resolution.
 
@@ -261,7 +272,7 @@ python -m src.run_pnlcalib_video --match dec-mla --no_flow --no_manual_seeds
 
 ## Demo Video Pipeline (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)
 
-End-to-end clip renderer used as a pitch artefact for the FSCG presentation: tracked players with jersey-coloured ellipses, name + jersey-number badges, live km/h + cumulative distance, ball triangle, pitch-line homography overlay, and a bottom-right minimap.
+End-to-end clip renderer (legacy showcase artefact — originally built for a May 2026 presentation that is no longer a driver; kept because it shares perception code with the pipeline and is useful for eyeballing): tracked players with jersey-coloured ellipses, name + jersey-number badges, live km/h + cumulative distance, ball triangle, pitch-line homography overlay, and a bottom-right minimap.
 
 **Per-frame pipeline:**
 1. YOLO detection + BoT-SORT tracking (`persist=True`).
@@ -290,6 +301,122 @@ python -m src.run_demo --match sut-mla --start_ts 1:04:48 --duration_sec 16
 ```
 The notebook (`04_demo_video.ipynb`) is the iteration-friendly version of the same pipeline — same logic inline in cell 9, plus the label / calibrate / compare cells.
 
+## Game State & Event Detection (`src/game_state.py`, `src/pipeline.py`, `src/events.py`)
+
+The **keystone** that unblocked event detection. Previously every notebook re-ran the
+whole expensive perception pass (YOLO + ResNet + PnLCalib) from scratch, so there was
+never a stable artifact to build event logic on. Now perception runs **once** and is
+persisted; analysis is instant and needs no video. This is the SoccerNet
+Game-State-Reconstruction intermediate representation (per-frame players with pitch XY +
+team, ball, camera), applied to our custom 1.CFL-tuned stack.
+
+**`game_state.py` — the artifact.** Per-match Parquet under `output/game_state/{slug}/`:
+- `players.parquet` — one row per (frame, track_id): `team_id`, image bbox, `foot_xy_img`,
+  `pitch_x/pitch_y` (metres on 105×68, NaN if no projection), `conf`.
+- `frames.parquet` — one row per frame: `time_sec`, `period`, `is_gameplay`, `is_wide_shot`,
+  `has_P`, `homog_source`, `homog_conf`, flattened 3×4 `P00..P23`, and the *best raw* ball
+  detection (`ball_pitch_x/y`, `ball_source` ∈ detected/none).
+- `ball.parquet` — one row per raw ball candidate detection (`frame, x1..y2, conf`); a
+  frame can have 0..n. This is what `ball_tracker.py` consumes.
+- `meta.json` — slug, video, fps, frame range, `homog_source_counts`, track/team counts.
+- `GameState.load(slug)` returns the DataFrames + helpers (`get_P`, `players_at`,
+  `ball_trajectory`, `ball_candidates`).
+
+**`pipeline.py` — `PerceptionPipeline`.** Extracts the per-frame loop that was **duplicated**
+in `run_demo.py` / `run_pnlcalib_video.py` and writes a `GameState` instead of rendering.
+It **imports** the proven pieces (does not reinvent them): `yolo.track(persist=True)`;
+the homography fallback chain (`predict_one_frame` → `CameraMotionTracker.propagate` →
+`refine_projection_to_lines` → `ProjectionSmoother`, gated by `check_projection_sanity` /
+`check_line_alignment` / `is_gameplay_frame`), storing `_line_alignment_score` as
+`homog_conf`; `project_foot` / `is_wide_shot`; and the saved `TeamClassifier`
+(sampled ResNet embeddings → track-level majority vote, joined back after the pass).
+Run: `python -m src.pipeline --match sut-mla --offset_min 10 --duration_sec 60`.
+
+**`events.py` — rule-based events.** Possession-then-event decision tree (Anzer/Bauer,
+PLOS One 2024): ball carrier per frame (nearest player within `POSSESSION_RADIUS_M`,
+ball slower than `CARRIER_MAX_BALL_SPEED`, not stale-coasted, not dead-ball) **plus
+explicit kick detection** (`detect_kicks`: ball-velocity discontinuity ≥ `KICK_DV_MS`
+next to a player — catches running one-touches proximity logic can't see) → debounced
+*touches* (each must overlap ≥1 *detected*-source ball frame — pure-interpolation touches
+are fabrications) → **possession spells** (team gains possession only if spell ≥1s or ≥2
+touches; deflections don't flip possession) → Pass / Carry / Shot + Ball Recovery at real
+spell boundaries. Dead-ball logic (`dead_ball_frames`) suppresses carrier/kicks from when
+the ball crosses the boundary until the restart. Export is **StatsBomb-v4-shaped**
+(type ids, possession sequences, Ball Receipt* after completes, pass length/angle,
+outcomes omitted on completes; declared deviations in `meta`: coords not
+attack-normalized, players are track ids).
+
+**`golden_eval.py` + `data/golden_events/` — ground truth.** Hand-labeled ball-control
+intervals + passes (built by frame-stepping contact sheets of ball-centered crops).
+Scoring vs golden on sut-mla (2×40s): **pass precision 0.75, recall 0.82, carrier
+accuracy-when-assigned 99%**; residual errors are one situation class (throw-in/restart
+handling — the out-of-bounds crossing often isn't registered because homography error
+near the touchline keeps the ball estimate inside) plus the structural **GK gap** (GKs
+classified 'Other' are invisible to possession — the golden GK build-up pass is a known
+FN). Unknown spans (aerial balls the labeler couldn't see) score separately as
+'unverifiable'. Tune against this, not against aggregate plausibility. Exports `output/events/{slug}_events.json` — a `summary`
+block (possession %, passes, completion %, shots, turnovers) + per-event StatsBomb-lite
+records (`location` in 120×80, native `pitch_xy` in metres, type-specific detail block).
+Run: `python -m src.events --match sut-mla`. QC in `04`→ `03_event_detection.ipynb`
+(pass-map + possession bar).
+
+**Generalization fixes (July 2026, found by running the chain on `dec-mla` + `bud-sut`):**
+- **ProjectionSmoother confirmation deadlock.** On a continuously fast-panning camera
+  (dec-mla's small ground) every consecutive raw P differs by more than the outlier
+  threshold, so the 3-frame confirmation never fires and the smoother returns stale state
+  forever — the artifact stored garbage labeled `pnlcalib` for minutes while *fresh*
+  PnLCalib on the same frames was visually perfect. Fix: `ProjectionSmoother.reset_to` +
+  a fresh-beats-stale snap in `pipeline._homography` (if the gate-verified fresh P scores
+  ≥1.5x the smoothed output's line-alignment on the same pixels, adopt it).
+- **Homography trust threshold is match-dependent.** The line-alignment score separates
+  good from bad *within* a match but its scale varies with paint/lighting (floodlit paint
+  has a green cast: S~115 vs sut-mla's ~35, so perfect dec-mla projections score 0.12-0.53
+  and a fixed 0.75 gate rejected 100% of the match). Do NOT "fix" this by loosening the
+  white-pixel mask — an adaptive-V mask was tried and inflated a known-WRONG sut-mla frame
+  from 0.64 to 1.00. Fix: `game_state.adaptive_conf_min` — per-match threshold =
+  0.75 x q75(conf of fresh-PnLCalib wide frames), clamped to [0.15, 0.75]. sut-mla
+  resolves to exactly 0.75 (bit-identical events); `trusted_frame_mask` lives in
+  `game_state.py` and is shared by events + ball tracker + renderer.
+- Perception speed: `predict_one_frame` accepts the pipeline's already-computed
+  `player_boxes` (was running YOLO twice per wide frame); `--pnl_stride N` (opt-in) runs
+  PnLCalib every Nth wide frame with gated optical flow carrying between.
+
+**Validated on `sut-mla`** (60s @ 10:00 FH, then re-validated on a 4-min window with the
+Kalman tracker) with a full **visual QC pass** (renders in `output/qc/sut-mla/`):
+- **Homography — coverage was inflated.** Raw `has_P` = 96.6%, but eyeballing the overlays
+  showed two failure classes counted as "covered": (a) close-up shots get a wide-shot P
+  carried onto them by the stale/manual-seed fallbacks (garbage), and (b) a mid-confidence
+  band (~0.5–0.75) with geometrically-wrong projections that still pass the automated
+  line-alignment gate (e.g. f18586 @ conf 0.64: penalty arc ~500 px off the paint). Honest
+  *correct* coverage ≈ **70–77%**. Genuine wide frames (conf ≥ ~0.85) are accurate (centre
+  circle / penalty box verified). Fix applied: `events.py` gates on
+  `is_wide_shot AND homog_conf ≥ HOMOG_CONF_MIN (0.75)`; `pipeline.py` no longer attempts
+  homography on non-wide frames.
+- **Team classification — verified correct** (~94%): objective kit-hue cross-check gives
+  team0=Mladost(yellow) 150/3, team1=Sutjeska(blue) 113/13. Consistent, not the skew driver.
+- **Possession 98/2 on the slice is REAL** (Mladost dominated that minute), *not* a
+  ball-tracking artifact — confirmed by overlaying ball+carrier (ball genuinely at the
+  yellow player's feet). A 60 s clip is not a match aggregate.
+
+**`ball_tracker.py` — Kalman ball tracker (Milestone 2, done).** QC found YOLO loses the
+ball on ~45% of frames (gaps of 12–64 frames, exactly during passes); the old 2-frame
+image-space extrapolation left damped ghost positions hovering at the kicker, which merged
+passes into one long touch and even fabricated possession for the wrong team. Replacement:
+a **pitch-space** constant-velocity KF over the persisted artifact (pure numpy/pandas — no
+video/GPU, so parameters iterate in seconds). Pitch space matters: the camera pans to follow
+the ball, so image-space coasting is wrong during exactly the gaps that need bridging, while
+the *ground track* of an airborne pass is genuinely constant-velocity and camera-independent.
+Key mechanics: measurements = candidates from `ball.parquet` projected via trusted P only
+(same `is_wide_shot AND homog_conf ≥ 0.75` gate as events); Mahalanobis gating with
+motion-consistent candidate selection; birth/confirm hysteresis (lone false positives never
+reported); kick handling via consistent-rejection reinit; honest coasting with a staleness
+gate (`events.py` refuses possession from a ball unseen > `CARRIER_MAX_MISSED` frames); and
+a **hindsight bridging pass** — coast/dead runs bounded by detections ≤ 2.4s apart are
+rewritten as a straight line (`source='bridged'`), which visual QC confirmed lands within
+~1–2 m of the real ball mid-blackout. On the sut-mla 4-min window: ball coverage within
+trusted frames ~90%, speeds physical (p95 = 15.5 m/s), team-1 passes recovered 4→7,
+ghost-derived possession eliminated. Run: `python -m src.ball_tracker --match sut-mla`.
+
 ## Dataset Conventions
 
 - **Filename format:** `{match-slug}_frame_{frame_number:07d}.jpg` (e.g., `bud-sut_frame_0012345.jpg`)
@@ -315,7 +442,7 @@ The notebook (`04_demo_video.ipynb`) is the iteration-friendly version of the sa
 - **Team classification** works well on ~10/16 matches, struggles on ~6 where jersey colors are similar or lighting is difficult. All 16 matches labeled and validated via 2-min annotated clips. Majority vote per track is more robust than a single median-embedding prediction but ID swaps from long occlusions can still cause systematic errors.
 - **Referee/GK filtering** via bottom-5% GMM membership probability is weak — refs often cluster tightly with one team. Future plan: use pitch position (requires homography)
 - **Pitch homography** — PnLCalib v2 averages 71% coverage across 16 matches. Tier 1 matches (7 of 14 working) are at 84-100%. Tier 3 matches (3 of 14) are at 10-43% due to night/dusk conditions, oblique cameras, and running tracks. Two matches crash with OpenCV errors. No camera motion estimation yet — each frame is processed independently.
-- **Ball tracking** uses simple linear interpolation across gaps. Could be improved with tracker-aware logic
+- **Ball tracking** (`ball_tracker.py` KF) can only bridge gaps bounded by trusted detections; a kick followed by a blackout *and* no re-acquisition within 2.4s still loses the ball, and airborne balls project with overshoot while high (z=0 plane assumption). Possession during long blackouts is honestly unknown — a real opponent touch inside one is missed, not misattributed.
 - **ars-dec source video** has a ~3:14 recording gap at the start of the second half — the second-half recording begins with the match clock already at 48:14. Period detection correctly flags this via its 42-min gap warning, but downstream event detection on ars-dec SH will be missing the first ~3 min of gameplay.
 
 ## Conventions

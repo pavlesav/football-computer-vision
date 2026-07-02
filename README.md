@@ -22,7 +22,10 @@ Full-match broadcast video
 [4. Pitch Homography]  -->  Pixel coordinates mapped to pitch coordinates (meters)
     |
     v
-[5. Event Detection]  -->  Passes, shots, possession changes  (planned)
+[5. Game State]  -->  Persisted per-frame artifact: players + ball + camera (Parquet)
+    |
+    v
+[6. Ball Tracking + Event Detection]  -->  Passes, carries, shots, possession -> StatsBomb-lite JSON
 ```
 
 ### Current Status
@@ -33,8 +36,10 @@ Full-match broadcast video
 | Detection + Tracking | Done | YOLOv8m + BoT-SORT, mAP50=0.944 |
 | Team Classification | Done | ResNet18 + PCA + KNN (k=5), 16/16 matches labeled |
 | Pitch Homography | In Progress | PnLCalib v2 + optical-flow + manual seeds, 71% avg coverage; per-frame drift being diagnosed via GT loop |
-| Event Detection | Planned | Requires homography |
-| Demo Video | Done | FSCG clip renderer with tracked players, names, speed/distance, minimap (`04_demo_video.ipynb`) |
+| Game State | Done | Cache-once perception artifact (Parquet): players + ball candidates + camera per frame |
+| Ball Tracking | Done | Pitch-space Kalman filter + hindsight gap bridging over the game state; visually validated |
+| Event Detection | In Progress | Possession/passes/carries/shots working end-to-end on `sut-mla`; scaling to full halves next |
+| Demo Video | Done | Demo clip renderer with tracked players, names, speed/distance, minimap (`04_demo_video.ipynb`) |
 
 ## Project Structure
 
@@ -55,7 +60,12 @@ football-computer-vision/
 │   ├── video_utils.py                 # Video I/O, clip extraction (ffmpeg)
 │   ├── dataset.py                     # Training data management, train/val split
 │   ├── run_pnlcalib_video.py          # PnLCalib homography on video clips
-│   └── run_demo.py                    # FSCG demo renderer: tracking + names + speed/distance + minimap
+│   ├── run_demo.py                    # Demo clip renderer (legacy showcase): tracking + names + speed/distance + minimap
+│   ├── game_state.py                  # Persisted per-frame game-state artifact (Parquet)
+│   ├── pipeline.py                    # PerceptionPipeline: perception once → output/game_state/{slug}/
+│   ├── ball_tracker.py                # Pitch-space Kalman ball tracker (analysis-side, no GPU)
+│   ├── events.py                      # Possession → touches → events → StatsBomb-lite JSON
+│   └── render_game_state.py           # Annotated review MP4 rendered from the artifact (QC / judging tool)
 ├── models/                            # All models and weights
 │   ├── detection/weights/best.pt      # Fine-tuned YOLOv8m
 │   ├── segmentation/yolov8n-seg.pt    # Instance seg for team classification
@@ -71,14 +81,17 @@ football-computer-vision/
 ├── notebooks/
 │   ├── 01_team_classification.ipynb   # Per-game labeling widget → KNN classifier + review + validation
 │   ├── 02_homography.ipynb            # Homography visualization + model comparison
-│   ├── 03_event_detection.ipynb       # Event detection scaffold (passes, shots, possession)
-│   ├── 04_demo_video.ipynb            # FSCG demo render + label/calibrate/compare iteration loop
+│   ├── 03_event_detection.ipynb       # Game state → ball-track QC → events → pass map + export
+│   ├── 04_demo_video.ipynb            # Demo render + label/calibrate/compare iteration loop
 │   └── detection_training.ipynb       # YOLO training + error analysis
 ├── videos/                            # Source match videos (gitignored)
 ├── output/                            # All generated outputs (gitignored)
 │   ├── classifiers/                   # Per-game classifier.pkl + labels.npz + pass1.pkl
 │   ├── classifier_validation/         # Annotated 2-min clips for visual QC
-│   └── demo/                          # FSCG demo MP4s (full clip + discover-mode track-ID clip)
+│   ├── demo/                          # Demo MP4s (full clip + discover-mode track-ID clip)
+│   ├── game_state/{slug}/             # players/frames/ball parquet + meta.json
+│   ├── events/                        # {slug}_events.json — StatsBomb-lite event data
+│   └── qc/{slug}/                     # Visual QC renders (homography, ball track, pass events)
 ├── requirements.txt
 ├── CLAUDE.md                          # Detailed project guide for AI assistants
 └── README.md
@@ -153,7 +166,38 @@ python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 
 - `build_line_labeling_widget` — drag pitch lines and tap arc-intersection points; one unified solver handles both.
 - `build_line_adjust_widget` — pre-projects every named line using the pipeline's current `P` so the user clicks to confirm and drags an endpoint to nudge — fastest path when the pipeline is mostly right.
 
-### 5. Demo Video (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)
+### 5. Game State, Ball Tracking & Event Detection (`src/game_state.py`, `src/pipeline.py`, `src/ball_tracker.py`, `src/events.py`)
+
+Perception runs **once** per match window (`src.pipeline`) and persists a per-frame game
+state to `output/game_state/{slug}/` — players with pitch coordinates + team, every raw
+ball candidate detection, and the camera projection with a per-frame confidence. All
+analysis reads this artifact: no video decode, no GPU, iteration in seconds.
+
+**Ball tracking** (`src.ball_tracker`) is a pitch-space constant-velocity Kalman filter
+over the persisted candidates. Pitch space matters: the broadcast camera pans to follow
+the ball, so image-space extrapolation is wrong during exactly the detection gaps that
+need bridging, while the ground track of a pass is genuinely constant-velocity. The
+filter gates detections (Mahalanobis + motion consistency), coasts honestly through
+blackouts, and a hindsight pass bridges gaps bounded by detections ≤ 2.4 s apart —
+verified visually to land within ~1-2 m of the real ball mid-blackout.
+
+**Event detection** (`src.events`) follows the possession-then-event decision tree:
+nearest player within a possession radius per frame → debounced touches → each
+touch-to-touch transition classified as Pass / Carry / Shot / Possession Change. Events
+are emitted only on trusted frames (wide shot + homography confidence ≥ 0.75). Export is
+StatsBomb-lite JSON (`output/events/{slug}_events.json`) with locations in both StatsBomb
+120×80 and native metres.
+
+```bash
+# 1. Build the game state (slow, GPU — run once per window)
+python -m src.pipeline --match sut-mla --offset_min 10 --duration_sec 240
+# 2. Ball-track coverage report (instant)
+python -m src.ball_tracker --match sut-mla
+# 3. Detect + export events (instant)
+python -m src.events --match sut-mla
+```
+
+### 6. Demo Video (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)
 
 Polished clip renderer used as a pitch artefact: tracked players with team-coloured ellipses, name + jersey-number badges, live km/h + cumulative distance, ball triangle, pitch-line homography overlay, and a bottom-right minimap. Each per-game render needs `PLAYER_NAMES: {track_id: (name, team_id, jersey_no)}` mapped from a `--discover`-mode pass that draws raw track IDs.
 
@@ -192,6 +236,10 @@ jupyter notebook notebooks/01_team_classification.ipynb
 
 # Run homography on a match clip
 python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 60
+
+# Perception → game state → events (see Layer 5)
+python -m src.pipeline --match sut-mla --offset_min 10 --duration_sec 240
+python -m src.events --match sut-mla
 ```
 
 ## Known Issues
@@ -199,4 +247,5 @@ python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 
 - **Team classification** all 16 matches labeled; struggles on ~6 where jersey colors are similar or lighting is difficult (night games, oblique cameras). Majority vote per track reduces label-switch errors but ID swaps from long occlusions can still cause systematic misclassification.
 - **Referee/GK filtering** is weak — refs often cluster with one team. Future fix: use pitch position via homography
 - **Pitch homography** averages 71% coverage on raw PnLCalib v2; night games and oblique cameras remain challenging. Optical-flow propagation and manual seeds are wired in as fallbacks but the per-frame drift / wrong-overlay rate on demo clips is still high — actively being diagnosed via the GT iteration loop in `04_demo_video.ipynb`.
+- **Ball tracking** can only bridge gaps bounded by trusted detections; a blackout with no re-acquisition within 2.4 s loses the ball, and possession during it is honestly unknown (missed, not misattributed). Airborne balls project onto the pitch plane with overshoot while high.
 - **ars-dec source video** has a ~3:14 recording gap at the start of the second half
