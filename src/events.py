@@ -491,6 +491,8 @@ def _summary(events, carrier, gs, conf_min) -> dict:
     trusted = int(trusted_frame_mask(gs, conf_min).sum())
     return {
         "n_events": len(events),
+        "n_frames": n_frames,
+        "period": int(gs.meta.get("period", 1)),
         "homog_conf_min": conf_min,
         "homography_trusted_pct": round(100 * trusted / max(n_frames, 1), 1),
         "carrier_frames": len(carrier),
@@ -510,13 +512,14 @@ def _summary(events, carrier, gs, conf_min) -> dict:
 # ── Export (StatsBomb v4-shaped) ─────────────────────────────────────────────
 # Follows the StatsBomb Open Data Events structure (doc v4.0.0): common fields
 # (id/index/period/timestamp/minute/second/type/possession/possession_team/
-# play_pattern/team/player/location/duration), 120x80 coordinates, typed detail
+# play_pattern/team/player/location/duration), 120x80 coordinates
+# (attack-direction normalized: each team attacks left→right), typed detail
 # objects, Ball Receipt* events after completed passes, and a possession
-# sequence counter that increments when possession really changes hands.
-# Known deviations, declared in meta: coordinates are NOT attack-direction
-# normalized (SB flips so each team attacks left→right; we don't yet know
-# per-team attack direction), players are track ids (no identities), and shot
-# outcomes are "Unknown" (unvalidated).
+# sequence counter that increments when possession really changes hands —
+# continuing across halves in the match-level export.
+# Known deviations, declared in meta: players are track ids unless an identity
+# file names them, and track ids are per-period (BoT-SORT restarts each run,
+# so period-2 ids are namespaced by PERIOD_TID_OFFSET until cross-half ReID).
 
 SB_TYPE = {"Pass": {"id": 30, "name": "Pass"},
            "Carry": {"id": 43, "name": "Carry"},
@@ -527,6 +530,12 @@ SB_PLAY_PATTERN = {"id": 1, "name": "Regular Play"}
 SB_PASS_OUTCOME = {"incomplete": {"id": 9, "name": "Incomplete"},
                    "interception": {"id": 9, "name": "Incomplete"},
                    "out": {"id": 75, "name": "Out"}}
+SB_SHOT_OUTCOME = {"goal": {"id": 97, "name": "Goal"}}   # else Unknown
+
+# Track-id namespace stride between periods in match-level exports. Raw
+# BoT-SORT ids restart at 1 for every artifact run, so period-1 track 20 and
+# period-2 track 20 are different people; a merged file must not conflate them.
+PERIOD_TID_OFFSET = 100000
 
 
 def _to_sb(xy) -> list:
@@ -538,57 +547,63 @@ def _sb_team(team: int, slug: str) -> dict:
     return {"id": int(team), "name": f"{slug}-team{team}"}
 
 
-def _sb_player(tid: int) -> dict:
-    return {"id": int(tid), "name": f"track-{tid}"}
-
-
 def _sb_timestamp(t: float) -> tuple:
     m, s = divmod(max(t, 0.0), 60)
     return f"00:{int(m):02d}:{s:06.3f}", int(m), int(s)
 
 
-def export_events(events: list[Event], slug: str, summary: dict,
-                  fps: float = 25.0) -> Path:
-    import uuid
-    Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
+                           index_start: int = 0, possession: int = 1,
+                           possession_team: Optional[int] = None,
+                           idmap: Optional[dict] = None) -> tuple:
+    """SB records for one period's events.
 
-    # StatsBomb convention: every event's coordinates are given from the
-    # acting team's perspective, attacking left→right (toward x=120). Raw
-    # pitch coordinates are flipped for the team attacking right-to-left.
+    Continuation state (``index_start`` / ``possession`` / ``possession_team``)
+    lets the match-level export chain periods with one running index and a
+    possession counter that survives halftime. Track ids are namespaced by
+    period (period 1 keeps raw ids). Returns
+    ``(records, possession, possession_team)``.
+    """
+    import uuid
+    period = events[0].period if events else 1
+    minute_offset = 45 * (period - 1)   # SB: minute continues across halves
     attack_ltr = {int(k): bool(v)
                   for k, v in (summary.get("attack_ltr") or {}).items()}
     gk_tracks = {int(k) for k in (summary.get("gk_tracks") or {})}
+    idmap = idmap or {}
 
-    # Real player names when the identity layer has them (src.identity:
-    # meta-track consolidation + the naming widget). Falls back to track ids.
-    from .identity import load_identity_map
-    idmap = load_identity_map(slug) or {}
+    def ns(tid: int) -> int:
+        return int(tid) + PERIOD_TID_OFFSET * (period - 1)
 
     def resolve_player(tid: int) -> dict:
         info = idmap.get(int(tid))
         if info:
             name = info.get("name") or f"#{info.get('number')}"
-            rec = {"id": int(tid), "name": name}
+            rec = {"id": ns(tid), "name": name}
             if info.get("number") is not None:
                 rec["jersey_number"] = int(info["number"])
             return rec
-        return _sb_player(tid)
+        suffix = "" if period == 1 else f"-h{period}"
+        return {"id": ns(tid), "name": f"track-{tid}{suffix}"}
 
+    # StatsBomb convention: every event's coordinates are given from the
+    # acting team's perspective, attacking left→right (toward x=120). Raw
+    # pitch coordinates are flipped for the team attacking right-to-left.
     def norm(xy_sb: list, team: int) -> list:
         if attack_ltr and not attack_ltr.get(int(team), True):
             return [round(120.0 - xy_sb[0], 2), round(80.0 - xy_sb[1], 2)]
         return xy_sb
 
     out = []
-    possession = 1
-    possession_team = events[0].team if events else 0
+    if possession_team is None:
+        possession_team = events[0].team if events else 0
 
     def base(e, etype, team, player, loc, t=None):
         ts, minute, second = _sb_timestamp(e.time_sec if t is None else t)
         rec = {
-            "id": str(uuid.uuid4()), "index": len(out) + 1,
+            "id": str(uuid.uuid4()), "index": index_start + len(out) + 1,
             "period": e.period, "timestamp": ts,
-            "minute": minute, "second": second,
+            "minute": minute + minute_offset, "second": second,
             "type": SB_TYPE[etype], "possession": possession,
             "possession_team": _sb_team(possession_team, slug),
             "play_pattern": SB_PLAY_PATTERN,
@@ -640,21 +655,135 @@ def export_events(events: list[Event], slug: str, summary: dict,
 
         if e.type == "Shot":
             rec = base(e, "Shot", e.team, e.player, e.location)
+            oc = e.details.get("outcome")
             rec["shot"] = {"end_location": norm(
                 _to_sb(e.details.get("end_location", e.location)), e.team),
-                           "outcome": {"id": 0, "name": "Unknown"}}
+                           "outcome": SB_SHOT_OUTCOME.get(
+                               oc, {"id": 0, "name": "Unknown"})}
+            if e.details.get("goal_oracle"):
+                rec["shot"]["oracle"] = e.details["goal_oracle"]
             out.append(rec)
+
+    return out, possession, possession_team
+
+
+def _sb_meta(slug: str, periods: list) -> dict:
+    return {
+        "schema": "statsbomb-events-v4-shaped",
+        "coordinates": "120x80, attack-direction normalized (left->right "
+                       "per acting team)",
+        "players": "BoT-SORT track ids unless named via data/identities; "
+                   f"period-2 ids offset by {PERIOD_TID_OFFSET} (no "
+                   "cross-half ReID yet)",
+        "periods": periods,
+        "source": "polutka football-computer-vision pipeline",
+    }
+
+
+def export_events(events: list[Event], slug: str, summary: dict,
+                  fps: float = 25.0) -> Path:
+    """Single-period export → ``output/events/{slug}_p{N}_events.json``."""
+    from .identity import load_identity_map
+    Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+    period = events[0].period if events else 1
+    recs, _, _ = _sb_records_for_period(
+        events, slug, summary, idmap=load_identity_map(slug, period))
+    payload = {
+        "slug": slug,
+        "meta": _sb_meta(slug, [period]),
+        "summary": summary,
+        "events": recs,
+    }
+    path = Config.OUTPUT_EVENTS_DIR / f"{slug}_p{period}_events.json"
+    path.write_text(json.dumps(payload, indent=2))
+    return path
+
+
+def _match_summary(halves: list) -> dict:
+    """Aggregate per-period summaries into match-level numbers. Possession is
+    weighted by each period's carrier-frame count."""
+    all_events = [e for events, _, _ in halves for e in events]
+    poss_frames = {0: 0.0, 1: 0.0}
+    trusted_f = total_f = 0
+    for _, s, _ in halves:
+        cf = s.get("carrier_frames", 0)
+        pp = s.get("possession_pct", {})
+        for t in (0, 1):
+            poss_frames[t] += pp.get(t, 0.0) * cf / 100.0
+        total_f += s.get("n_frames", 0)
+        trusted_f += s.get("n_frames", 0) * s.get("homography_trusted_pct", 0) / 100.0
+    tot = sum(poss_frames.values()) or 1
+    passes = [e for e in all_events if e.type == "Pass"]
+    patt = lambda tm: sum(1 for e in passes if e.team == tm)
+    comp = lambda tm: sum(1 for e in passes if e.team == tm
+                          and e.details.get("outcome") == "complete")
+    by_team = lambda et, tm: sum(1 for e in all_events
+                                 if e.type == et and e.team == tm)
+    goals = lambda tm: sum(1 for e in all_events if e.type == "Shot"
+                           and e.team == tm
+                           and e.details.get("outcome") == "goal")
+    return {
+        "n_events": len(all_events),
+        "periods": [p for _, _, p in halves],
+        "possession_pct": {0: round(100 * poss_frames[0] / tot, 1),
+                           1: round(100 * poss_frames[1] / tot, 1)},
+        "passes": {0: patt(0), 1: patt(1)},
+        "pass_completion_pct": {
+            0: round(100 * comp(0) / max(patt(0), 1), 1),
+            1: round(100 * comp(1) / max(patt(1), 1), 1)},
+        "carries": {0: by_team("Carry", 0), 1: by_team("Carry", 1)},
+        "shots": {0: by_team("Shot", 0), 1: by_team("Shot", 1)},
+        "goals": {0: goals(0), 1: goals(1)},
+        "possession_changes": sum(1 for e in all_events
+                                  if e.type == "Possession Change"),
+        "homography_trusted_pct": round(100 * trusted_f / max(total_f, 1), 1),
+    }
+
+
+def export_match_events(slug: str, halves: list) -> Path:
+    """Match-level export: ``halves`` is ``[(events, summary, period), ...]``
+    → one ``output/events/{slug}_events.json`` with a running event index,
+    possession numbering that continues across halves, and per-period
+    summaries preserved under ``summary.periods_detail``."""
+    from .identity import load_identity_map
+    Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+    halves = sorted(halves, key=lambda h: h[2])
+
+    recs: list = []
+    possession, possession_team = 1, None
+    for i, (events, summary, period) in enumerate(halves):
+        if i > 0:
+            # The period kickoff starts a fresh possession; we don't detect
+            # the kickoff itself, so the first event's team is the best proxy.
+            possession += 1
+            possession_team = events[0].team if events else possession_team
+        r, possession, possession_team = _sb_records_for_period(
+            events, slug, summary, index_start=len(recs),
+            possession=possession, possession_team=possession_team,
+            idmap=load_identity_map(slug, period))
+        recs.extend(r)
+
+    match_summary = _match_summary(halves)
+    match_summary["periods_detail"] = {p: s for _, s, p in halves}
+
+    # Teams swap ends at halftime — if inferred attack directions do NOT flip
+    # between periods, one period's roles inference is wrong.
+    if len(halves) >= 2:
+        d1 = halves[0][1].get("attack_ltr") or {}
+        d2 = halves[1][1].get("attack_ltr") or {}
+        flipped = all(bool(d1.get(t, d1.get(str(t)))) !=
+                      bool(d2.get(t, d2.get(str(t)))) for t in (0, 1)
+                      if (t in d1 or str(t) in d1) and (t in d2 or str(t) in d2))
+        match_summary["attack_direction_flipped_at_halftime"] = bool(flipped)
+        if not flipped:
+            print("WARNING: attack directions did not flip between halves - "
+                  "check roles inference on one of the artifacts")
 
     payload = {
         "slug": slug,
-        "meta": {
-            "schema": "statsbomb-events-v4-shaped",
-            "coordinates": "120x80, NOT attack-direction normalized",
-            "players": "BoT-SORT track ids (no identity mapping yet)",
-            "source": "polutka football-computer-vision pipeline",
-        },
-        "summary": summary,
-        "events": out,
+        "meta": _sb_meta(slug, [p for _, _, p in halves]),
+        "summary": match_summary,
+        "events": recs,
     }
     path = Config.OUTPUT_EVENTS_DIR / f"{slug}_events.json"
     path.write_text(json.dumps(payload, indent=2))
@@ -662,16 +791,36 @@ def export_events(events: list[Event], slug: str, summary: dict,
 
 
 def main():
+    from .game_state import available_periods
     ap = argparse.ArgumentParser(description="Detect events from a persisted game state")
     ap.add_argument("--match", default="sut-mla")
+    ap.add_argument("--half", type=int, default=None, choices=[1, 2],
+                    help="export just this period; default: all stored "
+                         "periods merged into one match-level file")
     args = ap.parse_args()
 
-    gs = GameState.load(args.match)
-    events, summary = detect_events(gs)
-    path = export_events(events, args.match, summary)
+    if args.half is not None:
+        gs = GameState.load(args.match, period=args.half)
+        events, summary = detect_events(gs)
+        path = export_events(events, args.match, summary)
+        print(f"\n=== {args.match} p{args.half}: {len(events)} events ===")
+        print(json.dumps(summary, indent=2))
+        print(f"Saved -> {path}")
+        return
 
-    print(f"\n=== {args.match}: {len(events)} events ===")
-    print(json.dumps(summary, indent=2))
+    halves = []
+    for p in available_periods(args.match):
+        gs = GameState.load(args.match, period=p)
+        events, summary = detect_events(gs)
+        halves.append((events, summary, p))
+        print(f"[p{p}] {len(events)} events, "
+              f"possession {summary['possession_pct']}")
+    path = export_match_events(args.match, halves)
+    payload = json.loads(path.read_text())
+    print(f"\n=== {args.match}: {payload['summary']['n_events']} events "
+          f"across periods {payload['summary']['periods']} ===")
+    print(json.dumps({k: v for k, v in payload["summary"].items()
+                      if k != "periods_detail"}, indent=2))
     print(f"Saved -> {path}")
 
 

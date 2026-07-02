@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import medfilt, savgol_filter
 
-from .game_state import GameState, P_COLS, game_state_dir, _to_parquet
+from .game_state import GameState, P_COLS, _to_parquet
 
 # Four well-spread pitch anchors (natural metres). Exact 4-point homography
 # refit is invertible for any non-degenerate quad; these sit centrally so
@@ -194,19 +194,20 @@ def stabilize_projections(gs: GameState) -> tuple[pd.DataFrame, pd.DataFrame, di
 
 
 def apply(gs: GameState, frames: pd.DataFrame, players: pd.DataFrame) -> None:
-    d = game_state_dir(gs.slug)
-    _to_parquet(frames, d / "frames.parquet")
-    _to_parquet(players, d / "players.parquet")
+    _to_parquet(frames, gs.dir / "frames.parquet")
+    _to_parquet(players, gs.dir / "players.parquet")
 
 
 def main():
     ap = argparse.ArgumentParser(description="Stabilize stored homography sequence")
     ap.add_argument("--match", default="sut-mla")
+    ap.add_argument("--half", type=int, default=None, choices=[1, 2],
+                    help="period to stabilize (default: the only stored one)")
     ap.add_argument("--apply", action="store_true",
                     help="rewrite frames/players parquet with stabilized values")
     args = ap.parse_args()
 
-    gs = GameState.load(args.match)
+    gs = GameState.load(args.match, period=args.half)
     frames, players, rep = stabilize_projections(gs)
     print(f"segments: {rep['segments']} | frames refit: {rep['frames_refit']}")
     print(f"jitter before: {rep['jitter_before']}")

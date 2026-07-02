@@ -236,7 +236,10 @@ class PerceptionPipeline:
         from ultralytics.trackers.basetrack import BaseTrack
         BaseTrack._count = 0
 
-        fh_start = self.period_info["first_half_start_frame"]
+        # time_sec is anchored to THIS half's kickoff, so period-2 artifacts
+        # start at 00:00 (StatsBomb timestamps restart every period).
+        half_anchor = (self.period_info["first_half_start_frame"] if period == 1
+                       else self.period_info["second_half_start_frame"])
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         frame_states: list[FrameState] = []
@@ -306,7 +309,7 @@ class PerceptionPipeline:
 
             frame_states.append(FrameState(
                 frame=abs_frame,
-                time_sec=(abs_frame - fh_start) / self.fps,
+                time_sec=(abs_frame - half_anchor) / self.fps,
                 period=period, is_gameplay=source != "non_gameplay",
                 is_wide_shot=wide, P=P, homog_source=source, homog_conf=conf,
                 players=pstates, ball=ball))
@@ -320,7 +323,8 @@ class PerceptionPipeline:
         # Persist mean appearance embeddings per track: identity consolidation
         # (src.identity) is kinematics-only without them, which fragments on
         # close-up-heavy halves. Saved so ReID upgrades need no perception re-run.
-        out_dir_early = Config.OUTPUT_GAME_STATE_DIR / self.slug
+        from src.game_state import game_state_dir
+        out_dir_early = game_state_dir(self.slug, period)
         out_dir_early.mkdir(parents=True, exist_ok=True)
         emb_ids = sorted(track_embeddings)
         emb_mat = np.stack([np.mean(track_embeddings[t], axis=0)
@@ -344,7 +348,7 @@ class PerceptionPipeline:
                                    ball_candidates=ball_cands)
         print(f"[{self.slug}] wrote game state -> {out_dir}")
         self._print_summary(frame_states, src_counts, track_teams)
-        return GameState.load(self.slug)
+        return GameState.load(self.slug, period=period)
 
     def _resolve_ball(self, best_ball, best_ball_conf, P):
         """Raw best detection for the frames-table convenience view. The old

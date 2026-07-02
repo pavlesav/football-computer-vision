@@ -184,8 +184,10 @@ def main():
     import argparse
     ap = argparse.ArgumentParser(description="Infer attack directions + goalkeepers")
     ap.add_argument("--match", default="sut-mla")
+    ap.add_argument("--half", type=int, default=None, choices=[1, 2],
+                    help="period to analyze (default: the only stored one)")
     args = ap.parse_args()
-    gs = GameState.load(args.match)
+    gs = GameState.load(args.match, period=args.half)
     d = infer_attack_direction(gs)
     print(f"attack left-to-right: team0={d.attack_ltr[0]} team1={d.attack_ltr[1]} "
           f"(confidence {d.confidence:.3f}, {d.n_deep_frames} deep-ball frames)")

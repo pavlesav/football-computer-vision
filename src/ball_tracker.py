@@ -415,11 +415,13 @@ def coverage_report(gs: GameState, ball: pd.DataFrame) -> str:
 def main():
     ap = argparse.ArgumentParser(description="Kalman ball tracking over a game state")
     ap.add_argument("--match", default="sut-mla")
+    ap.add_argument("--half", type=int, default=None, choices=[1, 2],
+                    help="period to track (default: the only stored one)")
     ap.add_argument("--conf_min", type=float, default=None,
                     help="Trust threshold; default = per-match adaptive")
     args = ap.parse_args()
 
-    gs = GameState.load(args.match)
+    gs = GameState.load(args.match, period=args.half)
     ball = track_ball(gs, conf_min=args.conf_min)
     print(coverage_report(gs, ball))
 

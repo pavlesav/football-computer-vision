@@ -17,7 +17,12 @@ team), the ball, and the camera projection.
 
 On-disk layout
 --------------
-``output/game_state/{slug}/``:
+``output/game_state/{slug}/p{period}/`` — one artifact per half, so running
+the second half never overwrites the first. Legacy flat artifacts
+(``output/game_state/{slug}/`` holding the tables directly) are still
+readable; ``GameState.load(slug)`` resolves them transparently.
+
+Each artifact directory contains:
 
   ``players.parquet`` — one row per (frame, track_id)::
 
@@ -151,8 +156,29 @@ class FrameState:
 
 # ── Writer ───────────────────────────────────────────────────────────────────
 
-def game_state_dir(slug: str) -> Path:
-    return Config.OUTPUT_GAME_STATE_DIR / slug
+def game_state_dir(slug: str, period: Optional[int] = None) -> Path:
+    """Artifact directory. ``period`` given → the per-half subdir
+    (``{slug}/p{period}``); ``None`` → the match root (legacy flat layout)."""
+    base = Config.OUTPUT_GAME_STATE_DIR / slug
+    return base if period is None else base / f"p{int(period)}"
+
+
+def _is_artifact(d: Path) -> bool:
+    return (d / "meta.json").exists()
+
+
+def available_periods(slug: str) -> list:
+    """Periods with a stored artifact, in order. A legacy flat artifact counts
+    as whatever its meta says (defaulting to period 1)."""
+    base = game_state_dir(slug)
+    periods = set()
+    for d in base.glob("p[0-9]"):
+        if _is_artifact(d):
+            periods.add(int(d.name[1:]))
+    if _is_artifact(base):
+        meta = json.loads((base / "meta.json").read_text())
+        periods.add(int(meta.get("period", 1)))
+    return sorted(periods)
 
 
 BALL_CAND_COLS = ["frame", "x1", "y1", "x2", "y2", "conf"]
@@ -165,9 +191,11 @@ def write_game_state(slug: str, frame_states: list, meta: dict,
     ``ball_candidates`` — optional table of every raw ball detection
     (columns :data:`BALL_CAND_COLS`), consumed by :mod:`src.ball_tracker`.
 
-    Returns the output directory. Overwrites any existing artifact for ``slug``.
+    Writes to the per-half subdir ``{slug}/p{period}`` (period taken from
+    ``meta``), so each half is its own artifact. Overwrites any existing
+    artifact for that (slug, period).
     """
-    out_dir = game_state_dir(slug)
+    out_dir = game_state_dir(slug, int(meta.get("period", 1)))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     player_rows, frame_rows = [], []
@@ -217,26 +245,69 @@ def _read_table(path: Path) -> pd.DataFrame:
 # ── Reader ───────────────────────────────────────────────────────────────────
 
 class GameState:
-    """Loaded game state for one match — thin convenience wrapper over the
-    two DataFrames, used by :mod:`src.events`, validation, and the UI."""
+    """Loaded game state for one match half — thin convenience wrapper over
+    the two DataFrames, used by :mod:`src.events`, validation, and the UI."""
 
     def __init__(self, slug: str, players: pd.DataFrame,
-                 frames: pd.DataFrame, meta: dict):
+                 frames: pd.DataFrame, meta: dict,
+                 art_dir: Optional[Path] = None):
         self.slug = slug
         self.players = players
         self.frames = frames.sort_values("frame").reset_index(drop=True)
         self.meta = meta
+        # Directory this artifact was loaded from — in-place rewriters
+        # (stabilize, team_repair) must target it, not re-derive a path.
+        self.dir = art_dir if art_dir is not None else \
+            game_state_dir(slug, int(meta.get("period", 1)))
 
     @classmethod
-    def load(cls, slug: str) -> "GameState":
-        d = game_state_dir(slug)
+    def load(cls, slug: str, period: Optional[int] = None) -> "GameState":
+        """Load one half's artifact.
+
+        ``period=None`` resolves automatically: a legacy flat artifact if one
+        exists, else the single stored period. When several periods exist the
+        caller must pick one (loading "the match" silently as one half would
+        corrupt any downstream aggregate).
+        """
+        base = game_state_dir(slug)
+        if period is not None:
+            d = game_state_dir(slug, period)
+            if not _is_artifact(d):
+                # Legacy flat artifact holding exactly this period.
+                if _is_artifact(base):
+                    meta = json.loads((base / "meta.json").read_text())
+                    if int(meta.get("period", 1)) == int(period):
+                        d = base
+                    else:
+                        raise FileNotFoundError(
+                            f"No artifact for {slug} period {period} "
+                            f"(flat artifact holds period {meta.get('period')})")
+                else:
+                    raise FileNotFoundError(
+                        f"No artifact for {slug} period {period} at {d}")
+        else:
+            if _is_artifact(base):
+                d = base
+            else:
+                avail = available_periods(slug)
+                if not avail:
+                    raise FileNotFoundError(f"No game state for {slug} under {base}")
+                if len(avail) > 1:
+                    raise ValueError(
+                        f"{slug} has artifacts for periods {avail} - "
+                        f"pass period= (CLI: --half) to pick one")
+                d = game_state_dir(slug, avail[0])
         meta = json.loads((d / "meta.json").read_text())
         return cls(slug, _read_table(d / "players.parquet"),
-                   _read_table(d / "frames.parquet"), meta)
+                   _read_table(d / "frames.parquet"), meta, art_dir=d)
 
     @property
     def fps(self) -> float:
         return float(self.meta.get("fps", 25.0))
+
+    @property
+    def period(self) -> int:
+        return int(self.meta.get("period", 1))
 
     def get_P(self, frame: int) -> Optional[np.ndarray]:
         row = self.frames.loc[self.frames.frame == frame]
@@ -257,7 +328,7 @@ class GameState:
         """All raw ball candidate detections (``ball.parquet``); empty
         DataFrame with the right columns for legacy artifacts without it."""
         try:
-            return _read_table(game_state_dir(self.slug) / "ball.parquet")
+            return _read_table(self.dir / "ball.parquet")
         except FileNotFoundError:
             return pd.DataFrame(columns=BALL_CAND_COLS)
 

@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
-from .game_state import GameState, game_state_dir, _to_parquet
+from .game_state import GameState, _to_parquet
 
 H_BINS, S_BINS = 18, 4
 MIN_SEPARATION = 0.2      # below this the kits are not hue-separable — abstain
@@ -158,18 +158,20 @@ def apply_flips(gs: GameState, table: pd.DataFrame) -> int:
     players = gs.players.copy()
     m = players.track_id.isin(flip_map)
     players.loc[m, "team_id"] = players.loc[m, "track_id"].map(flip_map)
-    _to_parquet(players, game_state_dir(gs.slug) / "players.parquet")
+    _to_parquet(players, gs.dir / "players.parquet")
     return int(m.sum())
 
 
 def main():
     ap = argparse.ArgumentParser(description="Kit-hue audit of team labels")
     ap.add_argument("--match", default="sut-mla")
+    ap.add_argument("--half", type=int, default=None, choices=[1, 2],
+                    help="period to audit (default: the only stored one)")
     ap.add_argument("--apply", action="store_true",
                     help="rewrite players.parquet with 'flip' corrections")
     args = ap.parse_args()
 
-    gs = GameState.load(args.match)
+    gs = GameState.load(args.match, period=args.half)
     table, sep = audit_teams(gs)
     print(f"kit separation: {sep:.3f}")
     if table.empty:

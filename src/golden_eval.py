@@ -113,9 +113,12 @@ def score_carrier(gs, golden_docs, ball=None) -> dict:
 def main():
     ap = argparse.ArgumentParser(description="Score events against the golden set")
     ap.add_argument("--match", default="sut-mla")
+    ap.add_argument("--half", type=int, default=1, choices=[1, 2],
+                    help="period whose artifact to score (golden sets are "
+                         "labeled per half; all current ones are first half)")
     args = ap.parse_args()
 
-    gs = GameState.load(args.match)
+    gs = GameState.load(args.match, period=args.half)
     golden = load_golden(args.match)
     events, _ = detect_events(gs)
 

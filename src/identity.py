@@ -211,11 +211,16 @@ def identity_path(slug: str) -> Path:
     return identities_dir() / f"{slug}.json"
 
 
-def save_identities(slug: str, meta: pd.DataFrame, names: dict) -> Path:
+def save_identities(slug: str, meta: pd.DataFrame, names: dict,
+                    period: int = 1) -> Path:
     """``names``: {meta_id: {"name": str, "number": int|None}}. Persists both
-    the naming and the track->meta mapping so the export can resolve tracks."""
+    the naming and the track->meta mapping so the export can resolve tracks.
+    ``period`` records which half's artifact the track ids belong to — track
+    ids restart every pipeline run, so a p1 mapping must never be applied to
+    p2 tracks."""
     payload = {
         "slug": slug,
+        "period": int(period),
         "meta_of_track": {str(int(r.track_id)): int(r.meta_id)
                           for r in meta.itertuples(index=False)},
         "players": {str(int(k)): v for k, v in names.items()},
@@ -225,12 +230,16 @@ def save_identities(slug: str, meta: pd.DataFrame, names: dict) -> Path:
     return p
 
 
-def load_identity_map(slug: str) -> Optional[dict]:
-    """{track_id: {"name":…, "number":…}} or None if no identity file."""
+def load_identity_map(slug: str, period: int = 1) -> Optional[dict]:
+    """{track_id: {"name":…, "number":…}} for ``period``'s track ids, or None
+    if no identity file exists for that period (files without a period field
+    predate per-half artifacts and are period 1)."""
     p = identity_path(slug)
     if not p.exists():
         return None
     d = json.loads(p.read_text())
+    if int(d.get("period", 1)) != int(period):
+        return None
     meta_of = {int(k): int(v) for k, v in d["meta_of_track"].items()}
     players = {int(k): v for k, v in d["players"].items()}
     return {tid: players[mid] for tid, mid in meta_of.items()
@@ -293,7 +302,8 @@ def build_identity_widget(gs, meta: pd.DataFrame, top_n: int = 40,
             if name.value.strip() or num.value.strip():
                 names[mid] = {"name": name.value.strip() or None,
                               "number": int(num.value) if num.value.strip().isdigit() else None}
-        p = save_identities(gs.slug, meta, names)
+        p = save_identities(gs.slug, meta, names,
+                            period=int(gs.meta.get("period", 1)))
         status.value = f"saved {len(names)} players -> {p}"
 
     btn.on_click(_save)
@@ -305,9 +315,11 @@ def build_identity_widget(gs, meta: pd.DataFrame, top_n: int = 40,
 def main():
     ap = argparse.ArgumentParser(description="Consolidate tracks into meta-tracks")
     ap.add_argument("--match", default="sut-mla")
+    ap.add_argument("--half", type=int, default=None, choices=[1, 2],
+                    help="period to consolidate (default: the only stored one)")
     args = ap.parse_args()
     from .game_state import GameState
-    gs = GameState.load(args.match)
+    gs = GameState.load(args.match, period=args.half)
     meta = consolidate_tracks(gs)
     print(consolidation_report(meta))
 

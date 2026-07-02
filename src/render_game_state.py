@@ -170,10 +170,11 @@ def _event_label(e) -> str:
 
 def render(slug: str, out_path=None, scale: float = 1.0,
            start_sec: Optional[float] = None,
-           duration_sec: Optional[float] = None):
+           duration_sec: Optional[float] = None,
+           period: Optional[int] = None):
     """``start_sec``/``duration_sec`` (relative to the artifact window) render
     just a clip — for quick QC without re-rendering a whole half."""
-    gs = GameState.load(slug)
+    gs = GameState.load(slug, period=period)
     ball = track_ball(gs).set_index("frame")
     events, summary = detect_events(gs)
     trusted = dict(zip(gs.frames["frame"].astype(int),
@@ -200,7 +201,8 @@ def render(slug: str, out_path=None, scale: float = 1.0,
     fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     ow, oh = int(fw * scale), int(fh * scale)
     if out_path is None:
-        out_path = Config.OUTPUT_DIR / "qc" / slug / f"{slug}_annotated_review{tag}.mp4"
+        out_path = (Config.OUTPUT_DIR / "qc" / slug /
+                    f"{slug}_p{gs.period}_annotated_review{tag}.mp4")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     vw = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"),
                          gs.fps, (ow, oh))
@@ -307,9 +309,11 @@ def main():
                     help="seconds into the artifact window to start (clip mode)")
     ap.add_argument("--duration_sec", type=float, default=None,
                     help="clip length in seconds")
+    ap.add_argument("--half", type=int, default=None, choices=[1, 2],
+                    help="period to render (default: the only stored one)")
     args = ap.parse_args()
     render(args.match, scale=args.scale, start_sec=args.start_sec,
-           duration_sec=args.duration_sec)
+           duration_sec=args.duration_sec, period=args.half)
 
 
 if __name__ == "__main__":
