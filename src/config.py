@@ -9,6 +9,7 @@ class Config:
     OUTPUT_TEAMS_DIR       = OUTPUT_DIR / "teams"
     OUTPUT_HOMOGRAPHY_DIR  = OUTPUT_DIR / "homography"
     OUTPUT_EVENTS_DIR      = OUTPUT_DIR / "events"
+    OUTPUT_GAME_STATE_DIR  = OUTPUT_DIR / "game_state"
     OUTPUT_CLASSIFIERS_DIR = OUTPUT_DIR / "classifiers"
 
     # --- Match videos (all 16 annotated matches) ---

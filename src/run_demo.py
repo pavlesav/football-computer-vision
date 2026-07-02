@@ -228,11 +228,17 @@ def is_wide_shot(players: list, frame_h: int,
 
     Cheap — uses only the already-detected player boxes, no extra YOLO pass.
     Close-ups have few players and the biggest box fills a big chunk of the frame.
+
+    Judged on the 3rd-tallest box, not the tallest: on grounds with a low
+    camera (dec-mla) a genuinely wide shot often has one player near the lens
+    whose box breaches the height cap, and the tallest-box rule mislabelled
+    532/6000 such frames as close-ups (QC-verified all genuinely wide). In a
+    real close-up *all* boxes are big, so the 3rd-tallest still catches it.
     """
     if len(players) < min_players:
         return False
-    tallest = max((p['bbox'][3] - p['bbox'][1]) / frame_h for p in players)
-    return tallest <= max_tallest_frac
+    heights = sorted((p['bbox'][3] - p['bbox'][1]) / frame_h for p in players)
+    return heights[-3] <= max_tallest_frac
 
 
 # ── Projection helper ─────────────────────────────────────────────────────────

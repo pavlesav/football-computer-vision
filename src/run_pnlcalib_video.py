@@ -710,6 +710,21 @@ class ProjectionSmoother:
             self.stale_count = 0
             return self.smoothed_P.copy()
 
+    def reset_to(self, P: np.ndarray) -> None:
+        """Hard-adopt ``P`` as the new stable state.
+
+        Escape hatch for the confirmation deadlock: on a continuously fast
+        panning camera every consecutive raw P differs from the last by more
+        than the outlier threshold, so the 3-frame confirmation never fires
+        and update() returns increasingly stale state forever (dec-mla QC:
+        stored P was garbage for minutes while fresh PnLCalib was correct).
+        The caller decides when the fresh P is verifiably better (e.g. by
+        line-alignment score) and snaps."""
+        self.smoothed_P = P.copy()
+        self._pending_P = None
+        self._pending_count = 0
+        self.stale_count = 0
+
 
 # ── PnLCalib inference ───────────────────────────────────────────────
 
@@ -788,6 +803,7 @@ def predict_one_frame(
     frame_h: int,
     manual_seeds: Optional[dict] = None,
     abs_frame: Optional[int] = None,
+    player_boxes: Optional[list] = None,
 ) -> Tuple[Optional[np.ndarray], str]:
     """Run PnLCalib + sanity gates + manual-seed fallback on a single frame.
 
@@ -799,15 +815,20 @@ def predict_one_frame(
       - ``sanity_fail``   - PnLCalib output rejected (players off pitch)
       - ``line_fail``     - PnLCalib output rejected (lines didn't hug paint)
       - ``inference_fail``- PnLCalib returned nothing
+
+    ``player_boxes`` — pass the frame's already-detected player bboxes
+    (xyxy) to skip the internal YOLO pass; callers that run their own
+    detection (src.pipeline) were otherwise paying YOLO twice per frame.
     """
     device = models["device"]
 
-    player_boxes = []
-    for r in models["yolo"](frame, verbose=False):
-        for box in r.boxes:
-            if int(box.cls[0]) == 0:
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                player_boxes.append((float(x1), float(y1), float(x2), float(y2)))
+    if player_boxes is None:
+        player_boxes = []
+        for r in models["yolo"](frame, verbose=False):
+            for box in r.boxes:
+                if int(box.cls[0]) == 0:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    player_boxes.append((float(x1), float(y1), float(x2), float(y2)))
 
     # Try default thresholds first; if PnLCalib returns nothing or its
     # output fails the gates, retry once with looser keypoint/line
