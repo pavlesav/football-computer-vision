@@ -43,6 +43,7 @@ Full-match broadcast video
 | Ball Tracking | Done | Pitch-space Kalman filter + hindsight gap bridging; tuned via masked-detection eval |
 | Event Detection | Working | Golden-measured on 27 passes / 3 matches: combined precision 0.83 / recall 0.89 (Tier-1); restart passes + play_pattern; StatsBomb-v4-shaped export, attack-normalized |
 | Roles & Identity | Working | Attack direction + GK possession integrated; track→meta-track consolidation + naming widget → named exports |
+| Jersey-Number OCR | First version | Shirt-number OCR → period-independent `#N` id; zero wrong answers / zero uniqueness violations on 13 hand-labeled tracks, one cross-half match visually confirmed, but coverage is sparse (easyocr-recall-limited, ~20/1300+ metas per half) |
 | Goal Oracle | Done | Scoreboard score-digit OCR → certain goals; sut-mla goal anchored within ~1 s of the pixel-verified moment |
 | First Complete Match | **Done** | sut-mla both halves: 1,434 events, 877 passes, possession 54/46, goals 1-0 (matches real result); merged SB JSON + one-page report |
 | Demo Video | Done | Demo clip renderer with tracked players, names, speed/distance, minimap (`04_demo_video.ipynb`) |
@@ -75,6 +76,7 @@ football-computer-vision/
 │   ├── report.py                      # One-page match report (mplsoccer) from the merged SB JSON
 │   ├── roles.py                       # Attack directions + goalkeeper identification (positional)
 │   ├── identity.py                    # Track consolidation + naming widget → real player names in exports
+│   ├── jersey_ocr.py                  # Shirt-number OCR → period-independent #N identity for cross-half stats
 │   ├── stabilize.py                   # Offline homography smoothing (removes overlay jitter)
 │   ├── golden_eval.py                 # Precision/recall vs hand-labeled golden event set
 │   ├── team_repair.py                 # Kit-hue audit of team labels (flags ID-swap suspects)
@@ -102,7 +104,7 @@ football-computer-vision/
 │   ├── classifiers/                   # Per-game classifier.pkl + labels.npz + pass1.pkl
 │   ├── classifier_validation/         # Annotated 2-min clips for visual QC
 │   ├── demo/                          # Demo MP4s (full clip + discover-mode track-ID clip)
-│   ├── game_state/{slug}/p{1,2}/      # players/frames/ball parquet + embeddings.npz + meta.json per half
+│   ├── game_state/{slug}/p{1,2}/      # players/frames/ball parquet + embeddings.npz + jersey_numbers.json + meta.json per half
 │   ├── events/                        # {slug}_events.json (match) + {slug}_p{N}_events.json + goal oracle
 │   ├── reports/{slug}/                # One-page match report PNG
 │   └── qc/{slug}/                     # Visual QC renders (homography, ball track, pass events)
@@ -295,6 +297,6 @@ python -m src.events --match sut-mla
 - **Pitch homography** averages 71% coverage on raw PnLCalib v2; night games and oblique cameras remain challenging. Optical-flow propagation and manual seeds are wired in as fallbacks but the per-frame drift / wrong-overlay rate on demo clips is still high — actively being diagnosed via the GT iteration loop in `04_demo_video.ipynb`.
 - **Ball tracking** can only bridge gaps bounded by trusted detections; a blackout with no re-acquisition within 2.4 s loses the ball, and possession during it is honestly unknown (missed, not misattributed). Airborne balls project onto the pitch plane with overshoot while high.
 - **Shots are conservative** — direction-aware validation removed all nearest-goal artifacts; the detector now finds only clear on-target attempts (1 on the sut-mla full match, pixel-verified true positive). Goals come from the scoreboard oracle with certainty; shot *outcomes* beyond goals remain Unknown.
-- **No cross-half player identity** — BoT-SORT track ids restart per half, so the same player appears as separate consolidated ids in each half of the merged export (`player-mN` vs `player-mN-h2`) until appearance ReID lands (per-track embeddings are already persisted).
+- **Cross-half player identity is automatic but sparse for now** — `src/jersey_ocr.py` OCRs shirt numbers and resolves confident reads to a period-independent id, precision-validated (zero wrong answers on 13 hand-labeled tracks, one cross-half match visually confirmed) but low-coverage (easyocr-recall-limited to ~20-22 of 1300+ metas per half), so most outfield players still appear as separate consolidated ids per half (`player-mN` vs `player-mN-h2`) until coverage improves or appearance ReID lands.
 - **Goal-oracle team mapping is manual** — the graphics say home/away but classifier team ids are arbitrary per match; pass `--home_team` (verified via kit colors) per match.
 - **ars-dec source video** has a ~3:14 recording gap at the start of the second half

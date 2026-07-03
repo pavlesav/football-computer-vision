@@ -53,6 +53,7 @@ football-computer-vision/
 │   ├── backfill_embeddings.py         # Recompute embeddings.npz for artifacts predating its persistence (stored bboxes, no re-run)
 │   ├── roles.py                       # Attack direction (defensive-shape vote) + GK identification (positional signature)
 │   ├── identity.py                    # Track→meta-track consolidation + naming widget + data/identities/{slug}.json
+│   ├── jersey_ocr.py                  # Shirt-number OCR: crop→easyocr→meta-vote → period-independent #N identity
 │   ├── team_repair.py                 # Kit-hue audit of track team labels (flip clear errors, flag ID-swap suspects)
 │   ├── stabilize.py                   # Offline homography smoothing (kills the 8Hz overlay jitter) + player-pos recompute
 │   ├── golden_eval.py                 # Score detected passes/carrier vs hand-labeled golden set (precision/recall)
@@ -86,7 +87,7 @@ football-computer-vision/
 │   ├── classifiers/                   # Per-game {slug}_classifier.pkl + {slug}_labels.npz
 │   ├── classifier_validation/         # Annotated 2-min clips for visual QC of team classification
 │   ├── demo/                          # Demo MP4s (`{slug}_{ts}_demo.mp4`, `{slug}_{ts}_discover.mp4`)
-│   ├── game_state/{slug}/p{1,2}/      # players/frames/ball parquet + embeddings.npz + meta.json per half
+│   ├── game_state/{slug}/p{1,2}/      # players/frames/ball parquet + embeddings.npz + jersey_numbers.json + meta.json per half
 │   ├── events/                        # {slug}_events.json (match) + {slug}_p{N}_events.json + {slug}_goal_oracle.json
 │   └── reports/{slug}/                # One-page match report PNG
 ├── notebooks/
@@ -105,10 +106,10 @@ football-computer-vision/
 1. ~~**Broadcast analysis**~~ — Done. Unsupervised period detection works on all 16 matches (15 PASS, 1 WARN).
 2. **Pitch homography** — In progress. PnLCalib pretrained model + post-processing (v2), Lucas-Kanade optical-flow propagation (`camera_motion.py`), and manual seeds (`manual_calibration.py`) all wired into the runner. v2 averages 71% coverage across 16 matches. The demo notebook (`04_demo_video.ipynb`) added a label/calibrate/compare iteration loop with a line-adjust ground-truth widget seeded from the pipeline's own P. Next step: use that loop on a representative clip to diagnose the residual drift/wrong-overlay failures (PnLCalib output vs `refine_projection_to_lines` bias vs flow-propagated bad seed) and tighten whichever stage is responsible.
 3. **Event detection** — Working at **full-match scale, golden-measured on 4 segments / 3 matches / 27 passes**. `src.pipeline` persists a per-frame **game state**; ball tracker + roles (attack direction, GKs) + rule-based events (incl. restart detection → throw-in/corner/goal-kick passes + SB play_pattern) derive a StatsBomb-v4-shaped stream. Golden scorecard: **combined P 0.83 / R 0.89** — sut-mla FH 0.79/0.94, sut-mla SH 0.86/0.75, bud-sut 1.00/1.00, carrier 98-99% when assigned (Tier-1 conditions); bok-jed Tier-2 baseline is 0/0 with named causes (homography-bounded coverage, crowd carrier misattribution, roles need ≥ a half of data). Remaining error classes are *named*: ID swaps / track team-contamination (the entire remaining sut-mla FN/FP set), restart over-detection (~3x true throw-in count; hurts play_pattern fidelity, not pass precision), non-goal shot outcomes.
-4. **Cross-shot player matching** — First version working (`src/identity.py`): GK tracks merge via roles; outfield via team + kinematic continuity + a meta-level long-gap/short-distance pass. bud-sut: 320 tracks → 78 metas, top-40 = 88% of player-frames. Close-up-heavy halves fragment (sut-mla FH 27%). **Measured negative result (2026-07-03): the team-classifier ResNet18 embeddings carry NO within-team identity signal** (same-player track pairs cosine 0.855 vs different-player-same-team 0.876; P(same>cross)=0.43 = chance) — cross-half/appearance ReID must NOT use them. GKs get a stable cross-half identity via roles (`goalkeeper-t{N}` in exports); outfield cross-half unification happens through the naming workflow (name both halves identically) until jersey-number OCR or a purpose-trained ReID model lands.
-5. **Jersey number / player identity** — Naming workflow exists: `build_identity_widget` (best-crop gallery per meta-track, ~10-15 min/match with public lineups) → `data/identities/{slug}.json` → export resolves `player: {id, name, jersey_number}` automatically.
+4. **Cross-shot player matching** — First version working (`src/identity.py`): GK tracks merge via roles; outfield via team + kinematic continuity + a meta-level long-gap/short-distance pass. bud-sut: 320 tracks → 78 metas, top-40 = 88% of player-frames. Close-up-heavy halves fragment (sut-mla FH 27%). **Measured negative result (2026-07-03): the team-classifier ResNet18 embeddings carry NO within-team identity signal** (same-player track pairs cosine 0.855 vs different-player-same-team 0.876; P(same>cross)=0.43 = chance) — cross-half/appearance ReID must NOT use them. GKs get a stable cross-half identity via roles (`goalkeeper-t{N}` in exports); outfield cross-half unification now also happens automatically for confidently jersey-OCR'd players (`src/jersey_ocr.py`, below) — everyone else still needs the naming workflow (name both halves identically) until coverage improves or a purpose-trained ReID model lands.
+5. **Jersey number / player identity** — Two paths now exist. **Manual**: `build_identity_widget` (best-crop gallery per meta-track, ~10-15 min/match with public lineups) → `data/identities/{slug}.json` → export resolves `player: {id, name, jersey_number}` automatically. **Automatic (`src/jersey_ocr.py`, 2026-07-03)**: OCRs shirt numbers from stored bboxes, votes them up to meta-track level, and resolves confident metas to a period-independent `#N` identity in the export — see the dedicated section below for the measured precision/coverage tradeoff (zero wrong answers across 13 hand-labeled tracks, but the two test matches' "top passers" don't yet surface a numbered player because coverage is too sparse to overlap with the busiest passers).
 6. ~~**"First complete match" milestone**~~ — **Done (2026-07-03), sut-mla is the first complete match**: per-half artifacts (`p1|p2`, legacy flat dirs still load), both halves processed + stabilized, one merged SB events JSON (1,434 events, 877 passes, possession 54/46, 207 possession changes, attack directions verified to flip at halftime), **scoreboard goal-oracle** (`src/score_ocr.py`) pixel-validated — final score OCR 1-0 == real result, the goal anchored within ~1s of the ball crossing the line — and the **first one-page match report** (`src/report.py`, mplsoccer). Key insight from QC: the goal happened on a close-up camera where events are correctly paused, so the oracle is the *only* honest source of goals.
-7. **NEXT: batch Tier-1/2 matches** via `src/run_match.py` (one command per match: perception both halves → stabilize → oracle → events → report; resumable via `output/match_runs/{slug}_status.json`; launch detached — a harness-tied background run died at 90% once). The generalized score_ocr parses all six surveyed scoreboard layouts (both families: text-token score and red-box digits). Then the correction UI informed by real per-match error volumes; jersey-number OCR for cross-half outfield identity.
+7. **NEXT: batch Tier-1/2 matches** via `src/run_match.py` (one command per match: perception both halves → stabilize → oracle → events → report; resumable via `output/match_runs/{slug}_status.json`; launch detached — a harness-tied background run died at 90% once). The generalized score_ocr parses all six surveyed scoreboard layouts (both families: text-token score and red-box digits). Then the correction UI informed by real per-match error volumes; more jersey-OCR coverage (bigger per-track frame cap, more matches) to make cross-half unification show up organically instead of needing a lucky draw.
 
 ## Data Flow (01_team_classification.ipynb)
 
@@ -478,6 +479,76 @@ rewritten as a straight line (`source='bridged'`), which visual QC confirmed lan
 trusted frames ~90%, speeds physical (p95 = 15.5 m/s), team-1 passes recovered 4→7,
 ghost-derived possession eliminated. Run: `python -m src.ball_tracker --match sut-mla`.
 
+## Jersey-Number OCR & Cross-Half Identity (`src/jersey_ocr.py`)
+
+Automatic path for the outfield cross-half identity gap (`src/identity.py`'s embeddings
+were measured to carry no signal — see roadmap item 4). Numbers are on the BACK of
+shirts: torso crop from each stored bbox (`y1+0.12h..y1+0.55h`, `x1+0.15w..x2-0.15w`,
+boxes `h>=90px` only, 4x upscale), `easyocr` with a digit allowlist
+(`readtext(..., allowlist="0123456789")`, accept only conf ≥ 0.5, 1-2 digits parsing to
+1..99). Reads are collected per track, mapped to meta-tracks via
+`identity.meta_map`, and voted: a meta ships a number only with `votes >= 4` AND
+`agreement = votes/reads >= 0.6` (raised from an initial `votes >= 3` — see below). A
+uniqueness pass then keeps the higher-vote meta and drops the other whenever two metas of
+the same (team, period) claim the same number. Writes
+`output/game_state/{slug}/p{N}/jersey_numbers.json`
+(`meta_numbers` + per-track `track_reads` for ID-swap diagnostics + `params`). Export
+integration (`events.py: resolve_player`): a confident meta resolves to
+`{id: 800000+team*1000+number, name: "#N", jersey_number: N}` — period-independent, so
+the SAME id aggregates a player's stats across both halves. Priority order: named
+identity file > goalkeeper (900000 base) > jersey number > consolidated meta id > raw
+track id.
+
+**Two extraction passes, both on sut-mla p1+p2 and bok-jed p1 (2026-07-03):**
+- **v1** (`votes>=3`, default `max_crops=3000`): 3000 crops is enough for a 4-minute
+  window (bok-jed: fully covered, no budget cutoff) but nowhere near enough for a full
+  75-78k-frame half — crops are planned **meta-first by total row count**, and a single
+  heavily-fragmented prominent player can own 100+ tracks, so the top 1-2 "mega-metas"
+  alone can consume the whole budget. Measured: sut-mla p2 planned crops for only 24 of
+  1434 metas before exhausting budget; **0 of 8 ground-truth tracks were even attempted**.
+  Separately, bok-jed shipped one **confidently wrong** number: track 315 (true #14, medium
+  confidence) was merged by `consolidate_tracks` into the same meta as track 3 (a different
+  physical player, verified visually, true #26) — track 3 alone produced 3/3 "26" reads at
+  exactly the `votes>=3` floor, and track 315 itself produced zero reads (its own crops
+  were clean and unclipped but easyocr's detector failed on all of them — confirmed with
+  raw/upscaled/CLAHE/thresholded variants, not a crop-geometry bug).
+- **v2** (`votes>=4`, `max_crops=22000`): the bigger budget (measured need: 18337 crops
+  for p1, 20540 for p2 — both *under* budget, i.e. every eligible track now gets its full
+  allocation) fixed the coverage collapse. Raising the vote floor to 4 was **swept against
+  the cached per-crop reads** (no re-extraction needed — `vote_min` only changes
+  aggregation) at 2/3/4/5 on all three artifacts: sut-mla shows **zero wrong answers at
+  every vote_min down to 2** (its ground-truth tracks simply never accumulate enough reads
+  — a coverage ceiling, not a threshold problem), while bok-jed's one wrong answer
+  (track 315→26) persists at vote_min 2 and 3 and is eliminated only at 4 — confirming 4 is
+  the minimum that removes the one measured defect, at the cost of two bok-jed tracks that
+  *were* independently correct at 2-3 votes (track 192→9, track 150→10) but couldn't be
+  distinguished from the bad case by vote count alone (both had 100% internal agreement;
+  the wrongness came entirely from the upstream consolidation merge, not weak OCR
+  evidence). Net result across both matches' full ground-truth tables (13 hand-labeled
+  tracks): **zero wrong confident numbers, zero uniqueness violations.**
+- **Coverage is genuinely low**: ~20-22 confident meta numbers per sut-mla half (out of
+  1300+ metas with eligible tracks) — most tracks' sampled crops simply never produce a
+  legible read (easyocr recall on small back-of-shirt crops is the bottleneck, not the
+  vote/agreement gates: several ground-truth tracks show 1-2 *correct* reads, just short
+  of `votes>=4`). **Cross-half consistency is real but underpowered to show in this
+  match's report**: team 1's #44 was independently read 6/6 unanimous in both halves and
+  is visually confirmed to be the same player (identical build/kit/haircut, pixel-checked
+  side by side) — proof the mechanism works — but neither test match currently has a
+  jersey-numbered meta that *also* ranks among the top passers, because the set of
+  "confidently numbered" metas and the set of "ball-touching event participants" are both
+  small (~20 and ~200-360 out of 1300+ per half) and rarely overlap by chance at this
+  coverage level. The merged sut-mla report's "Top passers" chart therefore does not yet
+  show a visible `#N` entry, even though the export layer resolves and aggregates them
+  correctly (verified directly against the JSON). Named next step: a bigger per-track
+  frame cap (currently capped at 12) or batch-processing more matches would raise the
+  overlap odds, at proportional easyocr compute cost (~0.15-0.18s/crop CPU; a full half at
+  the current budget takes ~55-60 min).
+
+Run: `python -m src.jersey_ocr --match sut-mla --half 2` (extraction) and `--eval` (ground
+-truth accuracy + uniqueness + cross-half overlap report, against a small hand-labeled
+table embedded in the module). `events.py --match X` auto-loads `jersey_numbers.json` per
+period (skipped by `--raw_tracks`) — no flag needed once the file exists.
+
 ## Dataset Conventions
 
 - **Filename format:** `{match-slug}_frame_{frame_number:07d}.jpg` (e.g., `bud-sut_frame_0012345.jpg`)
@@ -503,7 +574,7 @@ ghost-derived possession eliminated. Run: `python -m src.ball_tracker --match su
 - **Team classification** works well on ~10/16 matches, struggles on ~6 where jersey colors are similar or lighting is difficult. All 16 matches labeled and validated via 2-min annotated clips. Majority vote per track is more robust than a single median-embedding prediction but ID swaps from long occlusions can still cause systematic errors.
 - **Referee/GK filtering** — GKs are now identified positionally (`src/roles.py`: deepest-player-in-frame ≥70% + goal-zone residence) and folded into possession with the defending team; refs are excluded by the same signature. The old GMM-probability idea is superseded.
 - **Shots are conservative; goals come from the oracle** — direction-aware validation removed all 7 nearest-goal artifacts; the detector now finds only clear on-target attempts (1 on the sut-mla full match, pixel-verified real). Goals are supplied by the scoreboard goal-oracle with certainty but estimated location and unknown scorer; shot outcomes other than Goal remain Unknown.
-- **No cross-half outfield identity** — track ids restart per half; the merged export namespaces period-2 ids (`player-mN-h2`), so one outfield player is two rows across halves. GKs ARE unified (`goalkeeper-t{N}`, via roles). The persisted team-classifier embeddings were measured to carry NO within-team identity signal (P(same-player pair closer)=0.43) — do not build ReID on them; naming both halves via the identity widget unifies players by name today; jersey-number OCR is the planned automatic path.
+- **Cross-half outfield identity is now automatic but sparse** — `src/jersey_ocr.py` resolves confidently-read shirt numbers to a period-independent id (zero wrong answers / zero uniqueness violations measured on 13 hand-labeled tracks across sut-mla p2 + bok-jed p1; one cross-half match, team 1 #44, visually pixel-confirmed as the same player). But coverage is genuinely low (~20-22 confident metas per sut-mla half out of 1300+, limited by easyocr recall on small back-of-shirt crops, not by the vote thresholds) — most outfield players still fall back to per-half `player-mN` / `player-mN-h2` ids. GKs ARE unified (`goalkeeper-t{N}`, via roles). The persisted team-classifier embeddings were measured to carry NO within-team identity signal (P(same-player pair closer)=0.43) — do not build ReID on them; naming both halves via the identity widget still unifies the rest by name today.
 - **Restart over-detection** — the sticky dead-ball trigger finds ~3x the true throw-in count (homography drift parks the ball estimate on the line). Golden shows this does not hurt pass precision, but play_pattern tags are over-applied. Tightening needs a better out-of-bounds signal than position alone.
 - **Tier-2 conditions degrade the chain measurably** (bok-jed golden baseline: pass P/R 0/0, carrier 26%/51%): homography-untrusted stretches blank out whole control intervals, crowds misattribute the carrier via the lagging ball estimate, and roles need at least a half of data. Expect sparse events on Tier-2 batch output.
 - **Goal-oracle team mapping is manual** — pass `--home_team {0|1}` per match (graphics say home/away; classifier team indices are arbitrary).
