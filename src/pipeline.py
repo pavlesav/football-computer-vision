@@ -63,6 +63,10 @@ from src.run_demo import project_foot, is_wide_shot
 
 BALL_CONF_THRESHOLD = 0.08
 TEAM_SAMPLE_EVERY = 15          # frames between ResNet embedding samples per pass
+CHECKPOINT_EVERY = 15000        # frames between partial artifact writes: a
+                                # multi-hour run that dies mid-way leaves a
+                                # valid partial artifact instead of nothing
+                                # (a 4h SH run died at 90% once; never again)
 
 
 def _load_period(slug: str) -> dict:
@@ -80,8 +84,10 @@ class PerceptionPipeline:
     def __init__(self, slug: str, device: str = "cuda:0", alpha: float = 0.3,
                  use_flow: bool = True, use_manual_seeds: bool = True,
                  team_sample_every: int = TEAM_SAMPLE_EVERY,
-                 max_flow_streak: int = 60, pnl_stride: int = 1):
+                 max_flow_streak: int = 60, pnl_stride: int = 1,
+                 checkpoint_every: int = CHECKPOINT_EVERY):
         self.slug = slug
+        self.checkpoint_every = int(checkpoint_every)
         # pnl_stride > 1: run the two HRNet passes only every Nth wide frame
         # and let gated optical flow carry the projection between (speed
         # lever for full-half runs; stride 1 = PnLCalib on every wide frame).
@@ -314,10 +320,30 @@ class PerceptionPipeline:
                 is_wide_shot=wide, P=P, homog_source=source, homog_conf=conf,
                 players=pstates, ball=ball))
 
+            if (self.checkpoint_every and i > 0
+                    and i % self.checkpoint_every == 0):
+                self._persist(frame_states, track_embeddings, ball_cand_rows,
+                              start_frame, end_frame, period, src_counts,
+                              partial=True)
+
         cap.release()
 
-        # Post-pass: track-level team assignment, joined back onto every row.
-        print(f"[{self.slug}] classifying {len(track_embeddings)} tracks...")
+        track_teams = self._persist(frame_states, track_embeddings,
+                                    ball_cand_rows, start_frame, end_frame,
+                                    period, src_counts, partial=False)
+        self._print_summary(frame_states, src_counts, track_teams)
+        return GameState.load(self.slug, period=period)
+
+    def _persist(self, frame_states, track_embeddings, ball_cand_rows,
+                 start_frame, end_frame, period, src_counts,
+                 partial: bool) -> dict:
+        """Write the artifact from the state collected so far. Called at the
+        end and every ``checkpoint_every`` frames — each call is a complete,
+        loadable artifact, so a crashed run keeps everything up to its last
+        checkpoint. Returns the track→team map."""
+        # Track-level team assignment, joined back onto every row.
+        print(f"[{self.slug}] {'checkpoint: ' if partial else ''}"
+              f"classifying {len(track_embeddings)} tracks...")
         track_teams = self.clf.classify_tracks(track_embeddings)
 
         # Persist mean appearance embeddings per track: identity consolidation
@@ -339,6 +365,8 @@ class PerceptionPipeline:
         meta = {
             "video": Path(self.video_path).name, "fps": self.fps,
             "period": period, "start_frame": start_frame, "end_frame": end_frame,
+            "frames_processed": len(frame_states),
+            "partial": partial,
             "homog_source_counts": dict(src_counts),
             "n_tracks": len(track_teams),
             "n_ball_candidates": len(ball_cand_rows),
@@ -346,9 +374,9 @@ class PerceptionPipeline:
         ball_cands = pd.DataFrame(ball_cand_rows, columns=BALL_CAND_COLS)
         out_dir = write_game_state(self.slug, frame_states, meta,
                                    ball_candidates=ball_cands)
-        print(f"[{self.slug}] wrote game state -> {out_dir}")
-        self._print_summary(frame_states, src_counts, track_teams)
-        return GameState.load(self.slug, period=period)
+        print(f"[{self.slug}] wrote {'partial ' if partial else ''}"
+              f"game state ({len(frame_states)} frames) -> {out_dir}")
+        return track_teams
 
     def _resolve_ball(self, best_ball, best_ball_conf, P):
         """Raw best detection for the frames-table convenience view. The old
@@ -394,12 +422,15 @@ def main():
     ap.add_argument("--pnl_stride", type=int, default=1,
                     help="Run PnLCalib every Nth wide frame, flow carries "
                          "between (1 = every frame)")
+    ap.add_argument("--checkpoint_every", type=int, default=CHECKPOINT_EVERY,
+                    help="Frames between partial artifact writes (0 = off)")
     args = ap.parse_args()
 
     pipe = PerceptionPipeline(
         args.match, device=args.device, alpha=args.alpha,
         use_flow=not args.no_flow, use_manual_seeds=not args.no_manual_seeds,
-        team_sample_every=args.team_sample_every, pnl_stride=args.pnl_stride)
+        team_sample_every=args.team_sample_every, pnl_stride=args.pnl_stride,
+        checkpoint_every=args.checkpoint_every)
 
     p = pipe.period_info
     fps = pipe.fps
