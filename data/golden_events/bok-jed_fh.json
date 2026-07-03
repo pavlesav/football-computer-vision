@@ -1,0 +1,33 @@
+{
+  "slug": "bok-jed",
+  "period": 1,
+  "notes": "Tier-2 golden segment (10:00 into FH, frames 17864-18614). Labeled from ball-centered contact sheets (step 5). Bokelj = navy shirts = team0 (yellow boxes), Jedinstvo = white = team1 (blue boxes), GK in gray = track 1 (classifier 'other'). Window bookended by dead-ball phases: opens with the ball off the pitch on the embankment being retrieved for a goal kick, closes with a stopped-play free-kick setup that is never taken inside the window. Trusted homography here is only ~50-67% (Tier-2), so carrier coverage is expected to be lower than sut-mla.",
+  "segments": [
+    {
+      "name": "segF_bokjed_10min",
+      "f_start": 17864,
+      "f_end": 18614,
+      "control": [
+        {"tid": 1, "team": 0, "f0": 17939, "f1": 17989, "note": "GK (gray kit) walks the ball to the spot and plays long"},
+        {"tid": 58, "team": 0, "f0": 18034, "f1": 18104, "note": "controls the GK ball near the near touchline, walks it forward"},
+        {"tid": 126, "team": 1, "f0": 18119, "f1": 18160, "note": "intercepts 58's long ball, dribbles upfield; camera pans to blur after"},
+        {"tid": 133, "team": 1, "f0": 18186, "f1": 18208, "note": "under pressure from navy 182, tackled into scramble"},
+        {"tid": 146, "team": 1, "f0": 18262, "f1": 18292, "note": "emerges from the scramble with the ball"},
+        {"tid": 129, "team": 1, "f0": 18349, "f1": 18377, "note": "receives the clearance, then shielding duel with navy 315"}
+      ],
+      "unknown_spans": [
+        {"f0": 17864, "f1": 17937, "note": "OUT OF PLAY: ball on the embankment behind the line, being retrieved"},
+        {"f0": 17990, "f1": 18032, "note": "GK long-ball flight + camera cut"},
+        {"f0": 18160, "f1": 18185, "note": "camera pan blur, ball not visible"},
+        {"f0": 18209, "f1": 18261, "note": "tackle scramble, players on the ground, contested"},
+        {"f0": 18378, "f1": 18459, "note": "standing shielding duel 129 vs 315 then loose-ball scramble, contested"},
+        {"f0": 18460, "f1": 18614, "note": "PLAY STOPPED: free-kick setup, ball stationary and untaken to window end"}
+      ],
+      "passes": [
+        {"kick": 17991, "recv": 18034, "from": 1, "to": 58, "outcome": "complete", "note": "GK long ball to navy 58"},
+        {"kick": 18106, "recv": 18119, "from": 58, "to": 126, "outcome": "interception", "note": "long ball upfield picked off by white 126"},
+        {"kick": 18294, "recv": 18349, "from": 146, "to": 129, "outcome": "complete", "note": "ground clearance out of the scramble to white 129"}
+      ]
+    }
+  ]
+}
