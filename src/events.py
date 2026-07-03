@@ -49,6 +49,14 @@ CARRIER_MAX_BALL_SPEED = 9.0  # m/s — faster than this is flying past, not con
 CARRIER_MAX_MISSED = 10       # coasted ball older than this can't assign possession
 MIN_TOUCH_FRAMES = 3          # a carrier must hold ≥ this to count as a touch
 CARRIER_GAP_FRAMES = 12       # merge same-player touches split by a shorter gap
+# Touch validity (SH golden found the class): a rolling pass that skims past a
+# bystander at 5-8 m/s within 3 m mints a phantom touch that SPLITS the real
+# pass in two (segE: 43025->43189 became 43025->43203 + 43203->43189). A real
+# touch shows at least one of: the ball genuinely AT the feet, a sustained
+# hold, or kick evidence on the same player.
+TOUCH_MIN_DIST_M = 1.5        # ball must come at least this close once, or
+TOUCH_STRONG_FRAMES = 12      # the hold must last this long (0.5 s), or
+                              # a detected kick by the same player overlaps
 # A team only *gains possession* if its spell lasts >= this many frames or
 # contains >= 2 touches. A lone sub-second touch between opponent touches is a
 # deflection/duel: QC showed those emitted 3 "Possession Change" events in
@@ -333,7 +341,12 @@ def detect_kicks(gs: GameState, ball: pd.DataFrame,
         r0, r1 = b.iloc[i - 1], b.iloc[i]
         if int(r1.frame) - int(r0.frame) > 3:
             continue
-        if r1.source not in ("detected", "bridged"):
+        # Both anchors must be real detections: a hindsight bridge is a
+        # straight line, so any velocity step at its SEAM with a detected
+        # segment is an estimation artifact, not ball contact (SH golden:
+        # seam-kicks mid-flight minted phantom touches for bystanders and
+        # split real passes in two).
+        if r1.source != "detected" or r0.source != "detected":
             continue
         # A kick changes velocity, not position: a teleporting estimate is
         # the tracker re-acquiring a different ball, not ball contact.
@@ -368,9 +381,12 @@ def build_touches(gs: GameState, carrier: dict,
     estimates are fabrications (golden segB: micro-touches minted inside an
     aerial blackout while the real ball was high in the air)."""
     detected_frames = None
+    ball_pos = {}
     if ball is not None:
         detected_frames = set(
             ball.loc[ball["source"] == "detected", "frame"].astype(int))
+        ball_pos = {int(r.frame): (r.bx, r.by)
+                    for r in ball.itertuples(index=False) if r.bx == r.bx}
     frames = gs.frames.sort_values("frame")["frame"].tolist()
     # Position lookup: (frame, tid) -> (x, y)
     pos = {(int(r.frame), int(r.track_id)): (r.pitch_x, r.pitch_y)
@@ -413,6 +429,20 @@ def build_touches(gs: GameState, carrier: dict,
         xy1 = pos.get((f1, tid))
         if xy0 is None or xy1 is None:
             continue
+        # Touch validity: close approach, sustained hold, or kick evidence —
+        # otherwise it's a rolling ball skimming past a bystander.
+        if (f1 - f0 + 1) < TOUCH_STRONG_FRAMES and ball_pos:
+            dmin = np.inf
+            for f in range(int(f0), int(f1) + 1):
+                bp = ball_pos.get(f)
+                pp = pos.get((f, tid))
+                if bp and pp:
+                    dmin = min(dmin, float(np.hypot(pp[0] - bp[0],
+                                                    pp[1] - bp[1])))
+            kicked = kicks and any(
+                k[1] == tid and f0 - 3 <= k[0] <= f1 + 3 for k in kicks)
+            if dmin > TOUCH_MIN_DIST_M and not kicked:
+                continue
         touches.append(Touch(int(tid), int(team), int(f0), int(f1), xy0, xy1))
 
     # Inject kick-evidence touches (running one-touches the proximity logic

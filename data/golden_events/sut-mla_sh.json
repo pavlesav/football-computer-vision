@@ -1,0 +1,39 @@
+{
+  "slug": "sut-mla",
+  "period": 2,
+  "notes": "Second-half golden segment (43:00 into H2, frames 146104-147104). Labeled from ball-centered contact sheets (step 5). Mladost = yellow shirts = team0, Sutjeska = blue = team1. Contains two track-identity artifacts worth testing against: (a) track 43265 starts on the yellow #5 (team-mislabeled blue in the artifact), swaps onto a blue player at ~f146407 while the yellow #5 becomes 43355; (b) the same track 43265 later genuinely controls as the blue #20. Golden records the true situation per frame with the artifact's track ids.",
+  "segments": [
+    {
+      "name": "segE_sh43min",
+      "f_start": 146104,
+      "f_end": 147104,
+      "control": [
+        {"tid": 43025, "team": 0, "f0": 146104, "f1": 146186, "note": "carrying at segment start, pressured by 42894"},
+        {"tid": 43189, "team": 0, "f0": 146219, "f1": 146271},
+        {"tid": 43203, "team": 0, "f0": 146279, "f1": 146326},
+        {"tid": 43265, "team": 0, "f0": 146334, "f1": 146404, "note": "yellow #5; track team-mislabeled as blue in artifact"},
+        {"tid": 43355, "team": 0, "f0": 146409, "f1": 146454, "note": "same physical player (yellow #5) after ID swap at ~146407"},
+        {"tid": 43420, "team": 1, "f0": 146524, "f1": 146538, "note": "intercepts, first-time forward"},
+        {"tid": 43265, "team": 1, "f0": 146584, "f1": 146602, "note": "track 43265 now on blue #20 post-swap"},
+        {"tid": 43470, "team": 0, "f0": 146659, "f1": 146699},
+        {"tid": 43486, "team": 0, "f0": 146714, "f1": 146886, "note": "long dribble past 43483/43674"},
+        {"tid": 43634, "team": 0, "f0": 146896, "f1": 146971},
+        {"tid": 43672, "team": 0, "f0": 147021, "f1": 147086, "note": "yellow #3 deep near the goal line"}
+      ],
+      "unknown_spans": [
+        {"f0": 146604, "f1": 146657, "note": "midfield scramble: 43265/43308 (blue) vs 43317/43355 (yellow), contested"},
+        {"f0": 147087, "f1": 147104, "note": "ball runs loose near goal line, GK 43721 collects; segment end"}
+      ],
+      "passes": [
+        {"kick": 146186, "recv": 146219, "from": 43025, "to": 43189, "outcome": "complete"},
+        {"kick": 146271, "recv": 146279, "from": 43189, "to": 43203, "outcome": "complete"},
+        {"kick": 146326, "recv": 146334, "from": 43203, "to": 43265, "outcome": "complete", "note": "receiver is the yellow #5 (track team-mislabeled blue)"},
+        {"kick": 146454, "recv": 146524, "from": 43355, "to": 43420, "outcome": "interception", "note": "long kick upfield picked off by Sutjeska 43420"},
+        {"kick": 146537, "recv": 146584, "from": 43420, "to": 43265, "outcome": "complete", "note": "Sutjeska first-time ball to blue #20 (track 43265 post-swap)"},
+        {"kick": 146700, "recv": 146714, "from": 43470, "to": 43486, "outcome": "complete"},
+        {"kick": 146888, "recv": 146896, "from": 43486, "to": 43634, "outcome": "complete"},
+        {"kick": 146971, "recv": 147021, "from": 43634, "to": 43672, "outcome": "complete"}
+      ]
+    }
+  ]
+}

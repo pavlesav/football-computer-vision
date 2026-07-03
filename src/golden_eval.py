@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Optional
 
 from .config import Config
 from .game_state import GameState
@@ -33,12 +34,17 @@ EDGE_FRAMES = 50     # system passes this close to a segment edge aren't FPs
                      # (play continues past the labeled window)
 
 
-def load_golden(slug: str) -> list[dict]:
+def load_golden(slug: str, period: Optional[int] = None) -> list[dict]:
+    """Golden docs for a slug; ``period`` filters to that half's docs (docs
+    without a period field predate per-half artifacts and are period 1)."""
     out = []
     for p in sorted((Config.PROJECT_ROOT / "data" / "golden_events").glob(f"{slug}_*.json")):
-        out.append(json.loads(p.read_text()))
+        doc = json.loads(p.read_text())
+        if period is not None and int(doc.get("period", 1)) != int(period):
+            continue
+        out.append(doc)
     if not out:
-        raise FileNotFoundError(f"no golden files for {slug}")
+        raise FileNotFoundError(f"no golden files for {slug} period {period}")
     return out
 
 
@@ -119,7 +125,7 @@ def main():
     args = ap.parse_args()
 
     gs = GameState.load(args.match, period=args.half)
-    golden = load_golden(args.match)
+    golden = load_golden(args.match, period=args.half)
     events, _ = detect_events(gs)
 
     r = score_passes(events, golden)
