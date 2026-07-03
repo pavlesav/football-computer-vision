@@ -186,6 +186,13 @@ def consolidate_tracks(gs, fps: Optional[float] = None,
     return out.sort_values(["meta_id", "track_id"]).reset_index(drop=True)
 
 
+def meta_map(gs) -> dict:
+    """{track_id: meta_id} from conservative consolidation — lets exports
+    aggregate stats per (approximate) player before any naming happens."""
+    m = consolidate_tracks(gs)
+    return dict(zip(m.track_id.astype(int), m.meta_id.astype(int)))
+
+
 def consolidation_report(meta: pd.DataFrame) -> str:
     per = meta.groupby("meta_id").agg(tracks=("track_id", "size"),
                                       frames=("frames", "sum"),

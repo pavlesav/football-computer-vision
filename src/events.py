@@ -555,13 +555,17 @@ def _sb_timestamp(t: float) -> tuple:
 def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
                            index_start: int = 0, possession: int = 1,
                            possession_team: Optional[int] = None,
-                           idmap: Optional[dict] = None) -> tuple:
+                           idmap: Optional[dict] = None,
+                           meta_map: Optional[dict] = None) -> tuple:
     """SB records for one period's events.
 
     Continuation state (``index_start`` / ``possession`` / ``possession_team``)
     lets the match-level export chain periods with one running index and a
     possession counter that survives halftime. Track ids are namespaced by
-    period (period 1 keeps raw ids). Returns
+    period (period 1 keeps raw ids). ``meta_map`` (track→meta-track from
+    :func:`src.identity.meta_map`) keys player stats to consolidated players
+    instead of ephemeral tracks — without it a match's "top passer" is
+    whichever fragment of a player kept one BoT-SORT id longest. Returns
     ``(records, possession, possession_team)``.
     """
     import uuid
@@ -576,14 +580,19 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
         return int(tid) + PERIOD_TID_OFFSET * (period - 1)
 
     def resolve_player(tid: int) -> dict:
+        if int(tid) < 0:            # oracle goals have no identified scorer
+            return {"id": -1, "name": "unknown"}
         info = idmap.get(int(tid))
+        suffix = "" if period == 1 else f"-h{period}"
         if info:
             name = info.get("name") or f"#{info.get('number')}"
             rec = {"id": ns(tid), "name": name}
             if info.get("number") is not None:
                 rec["jersey_number"] = int(info["number"])
             return rec
-        suffix = "" if period == 1 else f"-h{period}"
+        if meta_map is not None:
+            mid = int(meta_map.get(int(tid), tid))
+            return {"id": ns(mid), "name": f"player-m{mid}{suffix}"}
         return {"id": ns(tid), "name": f"track-{tid}{suffix}"}
 
     # StatsBomb convention: every event's coordinates are given from the
@@ -681,13 +690,14 @@ def _sb_meta(slug: str, periods: list) -> dict:
 
 
 def export_events(events: list[Event], slug: str, summary: dict,
-                  fps: float = 25.0) -> Path:
+                  fps: float = 25.0, meta_map: Optional[dict] = None) -> Path:
     """Single-period export → ``output/events/{slug}_p{N}_events.json``."""
     from .identity import load_identity_map
     Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     period = events[0].period if events else 1
     recs, _, _ = _sb_records_for_period(
-        events, slug, summary, idmap=load_identity_map(slug, period))
+        events, slug, summary, idmap=load_identity_map(slug, period),
+        meta_map=meta_map)
     payload = {
         "slug": slug,
         "meta": _sb_meta(slug, [period]),
@@ -740,11 +750,67 @@ def _match_summary(halves: list) -> dict:
     }
 
 
-def export_match_events(slug: str, halves: list) -> Path:
+def inject_oracle_goals(slug: str, halves: list) -> int:
+    """Fold scoreboard goal-oracle goals (:mod:`src.score_ocr`) into the
+    per-period event lists as Shot events with outcome ``goal``.
+
+    The oracle knows a goal happened (score change on the broadcast graphics)
+    but not the shot's pixel-precise moment or location: the event is anchored
+    at the first frame the new score is visible (within seconds-to-a-minute
+    after the real goal, bracket declared in ``details.goal_oracle``) and
+    placed at the attacked goal's penalty spot, flagged ``location_estimated``.
+    Returns the number of goals injected."""
+    from .score_ocr import oracle_path
+    p = oracle_path(slug)
+    if not p.exists():
+        return 0
+    oracle = json.loads(p.read_text())
+    home = oracle.get("home_team_id")
+    if home is None:
+        print("goal-oracle present but home_team_id unknown - goals not "
+              "injected (re-run src.score_ocr with --home_team)")
+        return 0
+
+    by_period = {period: (events, summary) for events, summary, period in halves}
+    n = 0
+    for g in oracle.get("goals", []):
+        period = int(g["period"])
+        if period not in by_period:
+            continue
+        events, summary = by_period[period]
+        team = int(home) if g["scorer_side"] == "home" else 1 - int(home)
+        attack_ltr = (summary.get("attack_ltr") or {}).get(team, True)
+        spot = (PITCH_L - 11.0, PITCH_W / 2) if attack_ltr else (11.0, PITCH_W / 2)
+        goal_line = (PITCH_L, PITCH_W / 2) if attack_ltr else (0.0, PITCH_W / 2)
+        e = Event(
+            index=len(events), period=period,
+            frame=int(g.get("anchor_frame", g["first_seen_frame"])),
+            time_sec=float(g["time_sec"]), type="Shot", team=team,
+            player=-1, location=spot,
+            details={
+                "outcome": "goal",
+                "end_location": list(goal_line),
+                "location_estimated": True,
+                "goal_oracle": {
+                    "score_after": g["score_after"],
+                    "bracket_frames": [g["last_old_score_frame"],
+                                       g["first_seen_frame"]],
+                    "source": g["first_seen_source"],
+                },
+            })
+        events.append(e)
+        events.sort(key=lambda ev: (ev.frame, ev.index))
+        n += 1
+    return n
+
+
+def export_match_events(slug: str, halves: list,
+                        meta_maps: Optional[dict] = None) -> Path:
     """Match-level export: ``halves`` is ``[(events, summary, period), ...]``
     → one ``output/events/{slug}_events.json`` with a running event index,
     possession numbering that continues across halves, and per-period
-    summaries preserved under ``summary.periods_detail``."""
+    summaries preserved under ``summary.periods_detail``. ``meta_maps``:
+    {period: track→meta map} for player consolidation."""
     from .identity import load_identity_map
     Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     halves = sorted(halves, key=lambda h: h[2])
@@ -760,7 +826,8 @@ def export_match_events(slug: str, halves: list) -> Path:
         r, possession, possession_team = _sb_records_for_period(
             events, slug, summary, index_start=len(recs),
             possession=possession, possession_team=possession_team,
-            idmap=load_identity_map(slug, period))
+            idmap=load_identity_map(slug, period),
+            meta_map=(meta_maps or {}).get(period))
         recs.extend(r)
 
     match_summary = _match_summary(halves)
@@ -792,30 +859,43 @@ def export_match_events(slug: str, halves: list) -> Path:
 
 def main():
     from .game_state import available_periods
+    from .identity import meta_map as build_meta_map
     ap = argparse.ArgumentParser(description="Detect events from a persisted game state")
     ap.add_argument("--match", default="sut-mla")
     ap.add_argument("--half", type=int, default=None, choices=[1, 2],
                     help="export just this period; default: all stored "
                          "periods merged into one match-level file")
+    ap.add_argument("--raw_tracks", action="store_true",
+                    help="skip meta-track consolidation of player ids")
     args = ap.parse_args()
 
     if args.half is not None:
         gs = GameState.load(args.match, period=args.half)
         events, summary = detect_events(gs)
-        path = export_events(events, args.match, summary)
+        n_goals = inject_oracle_goals(args.match, [(events, summary, args.half)])
+        if n_goals:
+            print(f"[p{args.half}] {n_goals} oracle goal(s) injected")
+        mm = None if args.raw_tracks else build_meta_map(gs)
+        path = export_events(events, args.match, summary, meta_map=mm)
         print(f"\n=== {args.match} p{args.half}: {len(events)} events ===")
         print(json.dumps(summary, indent=2))
         print(f"Saved -> {path}")
         return
 
     halves = []
+    meta_maps = {}
     for p in available_periods(args.match):
         gs = GameState.load(args.match, period=p)
         events, summary = detect_events(gs)
         halves.append((events, summary, p))
+        if not args.raw_tracks:
+            meta_maps[p] = build_meta_map(gs)
         print(f"[p{p}] {len(events)} events, "
               f"possession {summary['possession_pct']}")
-    path = export_match_events(args.match, halves)
+    n_goals = inject_oracle_goals(args.match, halves)
+    if n_goals:
+        print(f"{n_goals} oracle goal(s) injected")
+    path = export_match_events(args.match, halves, meta_maps=meta_maps)
     payload = json.loads(path.read_text())
     print(f"\n=== {args.match}: {payload['summary']['n_events']} events "
           f"across periods {payload['summary']['periods']} ===")
