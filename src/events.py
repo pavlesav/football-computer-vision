@@ -856,14 +856,20 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
         if int(tid) in gk_tracks:
             team = gk_tracks[int(tid)]
             return {"id": GK_ID_BASE + team, "name": f"goalkeeper-t{team}"}
-        if jersey_numbers and meta_map is not None and meta_team is not None:
+        if jersey_numbers and meta_map is not None:
             mid = int(meta_map.get(int(tid), tid))
             jn = jersey_numbers.get(mid)
-            if jn is not None and mid in meta_team:
-                num = int(jn["number"])
-                team = int(meta_team[mid])
-                return {"id": JERSEY_ID_BASE + team * 1000 + num,
-                        "name": f"#{num}", "jersey_number": num}
+            if jn is not None:
+                # Team lives on the record (covers close-up singleton metas
+                # outside pitch-based consolidation); consolidation team is
+                # the fallback for records predating that field.
+                team = jn.get("team")
+                if team is None and meta_team is not None:
+                    team = meta_team.get(mid)
+                if team is not None:
+                    num = int(jn["number"])
+                    return {"id": JERSEY_ID_BASE + int(team) * 1000 + num,
+                            "name": f"#{num}", "jersey_number": num}
         if meta_map is not None:
             mid = int(meta_map.get(int(tid), tid))
             return {"id": ns(mid), "name": f"player-m{mid}{suffix}"}

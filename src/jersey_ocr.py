@@ -45,12 +45,32 @@ FRAME_DEDUP_GAP = 25           # frames; picks closer than this to an already
                                 # -picked frame are skipped (spread in time)
 UPSCALE = 4.0
 OCR_CONF_MIN = 0.5
-VOTE_MIN = 4                   # >=3 let a single lucky/wrong track (e.g. one
-                                # merged into the wrong meta by consolidation)
-                                # ship a confident number off 3 misattributed
-                                # reads alone (measured: bok-jed track 3, 3/3
-                                # "26" reads, inherited by track 315's meta)
+VOTE_MIN = 3
 AGREEMENT_MIN = 0.6
+# Structural gates (these — not a higher VOTE_MIN — are what protect against
+# consolidation errors; both patterns were measured, not hypothesized):
+#  * CORROBORATION: in a multi-track meta, the winning number's supporting
+#    reads must include the meta's DOMINANT member track (most rows) or span
+#    >=2 distinct member tracks. A number read only by a minor constituent is
+#    the signature of a track merged into the wrong meta — that geometry
+#    produced both measured wrong bindings (bok-jed meta 3: 3/3 "26" from the
+#    small track only; sut-mla p2 meta 35314: "team1 #5" from the yellow #5
+#    player's contaminated fragment inside a blue meta).
+#  * CONFLICT VETO: if a LOSING number has >= CONFLICT_VETO_VOTES reads from
+#    one single member track, the meta merges two different players (bok-jed
+#    meta 136: plurality #24 while member track 136 read 3/3 "33") — naming
+#    it would assign one player's events to the other, so abstain.
+#    Scattered single losing reads across tracks are OCR noise, not conflict
+#    (sut-mla p1 meta 13817: 12x "28" vs three 1-read "18"s -> ships #28).
+#  * SINGLE-SUPPORT FLOOR: a multi-track meta whose winning number is read by
+#    exactly ONE member track needs >= SINGLE_SUPPORT_VOTE_MIN votes. A lone
+#    supporter can be a wrongly-merged different player whose true teammates
+#    never produced a contrary read (bok-jed meta 3: dominant track 3 read
+#    3/3 "26", merged track 315 is truly #14 with zero reads — no other gate
+#    can see that). Strong lone supporters survive: sut-mla p1 #44 is a
+#    single supporter at 6/6 and is pixel-verified correct.
+CONFLICT_VETO_VOTES = 3
+SINGLE_SUPPORT_VOTE_MIN = 4
 # A full half has ~4300-5600 tracks and ~1500-1600 metas, but only ~20-21k
 # crops total across EVERY eligible track's up-to-12 frames (measured on
 # sut-mla p1/p2) — meta-first ordering means a small budget starves nearly
@@ -171,45 +191,99 @@ def build_plan(gs: GameState, max_crops: int) -> tuple:
 
 # ── Voting / aggregation ──────────────────────────────────────────────────
 
-def _vote(track_reads: dict, track_meta: dict) -> tuple:
-    """Collapse per-track reads to per-meta plurality votes. Returns
-    ``(meta_numbers, track_reads_json)``."""
-    meta_nums: dict = defaultdict(list)
-    track_reads_json = {}
+def _meta_context(gs: GameState) -> tuple:
+    """Membership/rows/team context for aggregation. Returns
+    ``(track_meta, meta_members, cons_team, track_team)`` where
+    ``meta_members[mid] = {tid: n_rows}`` covers EVERY substantial track (not
+    just those with reads — dominance must be judged against the whole meta),
+    and ``track_team`` is each track's stored classifier team (row majority),
+    used as the team fallback for tracks outside pitch-based consolidation
+    (close-up tracks have no pitch rows, but their team label — from the kit
+    classifier on big crops — is if anything MORE reliable)."""
+    row_counts = gs.players.groupby("track_id").size()
+    meta_of = identity_mod.meta_map(gs)
+    track_meta = {int(t): int(meta_of.get(int(t), int(t)))
+                  for t in row_counts.index}
+    meta_members: dict = defaultdict(dict)
+    for tid, mid in track_meta.items():
+        meta_members[mid][tid] = int(row_counts[tid])
+    cons_team = identity_mod.meta_teams(gs)
+    track_team = {int(t): int(m) for t, m in
+                  gs.players.groupby("track_id")["team_id"]
+                  .agg(lambda s: s.mode().iat[0]).items()}
+    return track_meta, meta_members, cons_team, track_team
+
+
+def aggregate(track_reads: dict, gs: GameState) -> dict:
+    """Per-meta numbers from per-track reads, with the structural gates
+    (corroboration, conflict veto) and per-meta team resolution. ``track_reads``:
+    {tid: [{"number", "conf", "frame"}, ...]}. Returns ``meta_numbers``:
+    {mid: {"number", "team", "votes", "reads", "agreement", "support_tracks"}}
+    after the uniqueness pass."""
+    track_meta, meta_members, cons_team, track_team = _meta_context(gs)
+
+    per_meta: dict = defaultdict(dict)          # mid -> {tid: Counter}
     for tid, reads in track_reads.items():
-        mid = track_meta.get(tid, tid)
-        track_reads_json[str(tid)] = {
-            "meta_id": int(mid),
-            "reads": [{"number": r["number"], "conf": round(r["conf"], 3),
-                      "frame": r["frame"]} for r in reads],
-        }
-        meta_nums[mid].extend(r["number"] for r in reads)
+        if not reads:
+            continue
+        mid = track_meta.get(int(tid), int(tid))
+        per_meta[mid][int(tid)] = Counter(r["number"] for r in reads)
 
     meta_numbers = {}
-    for mid, nums in meta_nums.items():
-        if not nums:
-            continue
-        counts = Counter(nums)
-        number, votes = counts.most_common(1)[0]
-        total = len(nums)
+    for mid, by_track in per_meta.items():
+        all_nums = Counter()
+        for c in by_track.values():
+            all_nums.update(c)
+        number, votes = all_nums.most_common(1)[0]
+        total = sum(all_nums.values())
         agreement = votes / total
-        if votes >= VOTE_MIN and agreement >= AGREEMENT_MIN:
-            meta_numbers[mid] = {"number": int(number), "votes": int(votes),
-                                 "reads": int(total),
-                                 "agreement": round(agreement, 3)}
-    return meta_numbers, track_reads_json
+        if votes < VOTE_MIN or agreement < AGREEMENT_MIN:
+            continue
+
+        members = meta_members.get(mid, {mid: 0})
+        support = sorted(t for t, c in by_track.items() if c.get(number))
+        dominant = max(members, key=members.get)
+        if len(members) > 1 and dominant not in support and len(support) < 2:
+            # number known only from a minor constituent of a multi-track
+            # meta — the wrong-merge signature; abstain
+            continue
+        if (len(members) > 1 and len(support) == 1
+                and votes < SINGLE_SUPPORT_VOTE_MIN):
+            # lone thin supporter inside a multi-track meta — could be a
+            # wrongly-merged different player; abstain
+            continue
+        conflict = any(
+            num != number and max(c.get(num, 0) for c in by_track.values())
+            >= CONFLICT_VETO_VOTES
+            for num in all_nums)
+        if conflict:
+            # a losing number is read consistently by one member track —
+            # this meta merges two different players; abstain
+            continue
+
+        team = cons_team.get(mid)
+        if team is None:
+            t = track_team.get(dominant)
+            team = t if t in (0, 1) else None
+        meta_numbers[mid] = {"number": int(number),
+                             "team": (int(team) if team is not None else None),
+                             "votes": int(votes), "reads": int(total),
+                             "agreement": round(agreement, 3),
+                             "support_tracks": [int(t) for t in support]}
+    return resolve_uniqueness(meta_numbers)
 
 
-def resolve_uniqueness(meta_numbers: dict, meta_team: dict) -> dict:
+def resolve_uniqueness(meta_numbers: dict) -> dict:
     """Within (team, number), keep only the highest-vote meta; demote the
-    rest. Metas whose team is unknown (absent from consolidation — no
-    pitch-valid rows) are left as-is, since they can't be safely grouped."""
+    rest (same-team same-number metas are usually the same fragmented player,
+    but a demotion only costs the weaker fragment its #N naming — it can
+    never mint a wrong identity). Team-None metas can't be grouped or
+    exported; they are kept in the file for diagnostics only."""
     groups: dict = defaultdict(list)
     for mid, rec in meta_numbers.items():
-        team = meta_team.get(mid)
-        if team is None:
+        if rec.get("team") is None:
             continue
-        groups[(team, rec["number"])].append(mid)
+        groups[(rec["team"], rec["number"])].append(mid)
 
     out = dict(meta_numbers)
     for (team, num), mids in groups.items():
@@ -323,13 +397,15 @@ def extract(slug: str, period: int, max_crops: int = DEFAULT_MAX_CROPS,
           f"{len(track_reads)} tracks with >=1 read "
           f"({time.time()-t0:.0f}s total)")
 
-    meta_numbers, track_reads_json = _vote(track_reads, track_meta)
-    meta_team = identity_mod.meta_teams(gs)
-    n_before = len(meta_numbers)
-    meta_numbers = resolve_uniqueness(meta_numbers, meta_team)
-    if len(meta_numbers) != n_before:
-        print(f"[{slug} p{period}] uniqueness resolution: {n_before} -> "
-              f"{len(meta_numbers)} confident metas")
+    track_reads_json = {
+        str(tid): {
+            "meta_id": int(track_meta.get(tid, tid)),
+            "reads": [{"number": r["number"], "conf": round(r["conf"], 3),
+                       "frame": r["frame"]} for r in reads],
+        }
+        for tid, reads in track_reads.items()
+    }
+    meta_numbers = aggregate(dict(track_reads), gs)
 
     suspects = id_swap_suspects(track_reads)
     if suspects:
@@ -355,7 +431,30 @@ def _params(max_crops: int) -> dict:
            "max_frames_per_track": MAX_FRAMES_PER_TRACK,
            "frame_dedup_gap": FRAME_DEDUP_GAP, "upscale": UPSCALE,
            "ocr_conf_min": OCR_CONF_MIN, "vote_min": VOTE_MIN,
-           "agreement_min": AGREEMENT_MIN, "max_crops": max_crops}
+           "agreement_min": AGREEMENT_MIN,
+           "conflict_veto_votes": CONFLICT_VETO_VOTES,
+           "single_support_vote_min": SINGLE_SUPPORT_VOTE_MIN,
+           "max_crops": max_crops}
+
+
+def revote(slug: str, period: int) -> dict:
+    """Re-aggregate an existing ``jersey_numbers.json`` from its cached
+    per-crop reads — gate/threshold changes never need the ~1h OCR pass."""
+    p = jersey_path(slug, period)
+    d = json.loads(p.read_text())
+    gs = GameState.load(slug, period=period)
+    track_reads = {int(t): v["reads"] for t, v in d["track_reads"].items()}
+    meta_numbers = aggregate(track_reads, gs)
+    d["meta_numbers"] = {str(k): v for k, v in meta_numbers.items()}
+    old_params = d.get("params", {})
+    d["params"] = {**old_params, **{k: v for k, v in _params(
+        old_params.get("max_crops", DEFAULT_MAX_CROPS)).items()
+        if k not in ("max_crops",)}}
+    p.write_text(json.dumps(d, indent=2))
+    usable = sum(1 for v in meta_numbers.values() if v.get("team") in (0, 1))
+    print(f"[{slug} p{period}] revote: {len(meta_numbers)} confident metas "
+          f"({usable} with a usable team) -> {p}")
+    return d
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────
@@ -420,11 +519,9 @@ def evaluate(slug: str, period: int) -> None:
         print(f"assigned {n_assigned}/{len(gt)}, correct {n_correct}/"
               f"{n_assigned} = {acc*100:.1f}% (gate: >=90%)")
 
-    cons = identity_mod.consolidate_tracks(gs)
-    meta_team = dict(zip(cons.meta_id.astype(int), cons.team.astype(int)))
     groups: dict = defaultdict(list)
     for mid, rec in jn.items():
-        team = meta_team.get(mid)
+        team = rec.get("team")
         if team is None:
             continue
         groups[(team, rec["number"])].append(mid)
@@ -446,14 +543,10 @@ def cross_half_check(slug: str) -> None:
         print(f"\ncross-half check: missing jersey_numbers.json for p{p1} "
               f"or p{p2} - skip")
         return
-    gs1, gs2 = GameState.load(slug, period=p1), GameState.load(slug, period=p2)
-    mt1 = identity_mod.meta_teams(gs1)
-    mt2 = identity_mod.meta_teams(gs2)
-
     print(f"\n=== {slug}: cross-half consistency ===")
     for team in (0, 1):
-        nums1 = {rec["number"] for mid, rec in jn1.items() if mt1.get(mid) == team}
-        nums2 = {rec["number"] for mid, rec in jn2.items() if mt2.get(mid) == team}
+        nums1 = {rec["number"] for rec in jn1.values() if rec.get("team") == team}
+        nums2 = {rec["number"] for rec in jn2.values() if rec.get("team") == team}
         overlap = nums1 & nums2
         smaller = min(len(nums1), len(nums2)) or 1
         frac = len(overlap) / smaller
@@ -473,11 +566,17 @@ def main():
     ap.add_argument("--eval", action="store_true",
                     help="evaluate an existing jersey_numbers.json instead "
                          "of extracting")
+    ap.add_argument("--revote", action="store_true",
+                    help="re-aggregate an existing jersey_numbers.json from "
+                         "its cached reads (no OCR) — use after gate changes")
     args = ap.parse_args()
 
     if args.eval:
         evaluate(args.match, args.half)
         cross_half_check(args.match)
+        return
+    if args.revote:
+        revote(args.match, args.half)
         return
 
     extract(args.match, args.half, max_crops=args.max_crops, force=args.force)

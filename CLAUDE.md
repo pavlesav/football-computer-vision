@@ -526,23 +526,35 @@ track id.
   the wrongness came entirely from the upstream consolidation merge, not weak OCR
   evidence). Net result across both matches' full ground-truth tables (13 hand-labeled
   tracks): **zero wrong confident numbers, zero uniqueness violations.**
-- **Coverage is genuinely low**: ~20-22 confident meta numbers per sut-mla half (out of
-  1300+ metas with eligible tracks) — most tracks' sampled crops simply never produce a
-  legible read (easyocr recall on small back-of-shirt crops is the bottleneck, not the
-  vote/agreement gates: several ground-truth tracks show 1-2 *correct* reads, just short
-  of `votes>=4`). **Cross-half consistency is real but underpowered to show in this
-  match's report**: team 1's #44 was independently read 6/6 unanimous in both halves and
-  is visually confirmed to be the same player (identical build/kit/haircut, pixel-checked
-  side by side) — proof the mechanism works — but neither test match currently has a
-  jersey-numbered meta that *also* ranks among the top passers, because the set of
-  "confidently numbered" metas and the set of "ball-touching event participants" are both
-  small (~20 and ~200-360 out of 1300+ per half) and rarely overlap by chance at this
-  coverage level. The merged sut-mla report's "Top passers" chart therefore does not yet
-  show a visible `#N` entry, even though the export layer resolves and aggregates them
-  correctly (verified directly against the JSON). Named next step: a bigger per-track
-  frame cap (currently capped at 12) or batch-processing more matches would raise the
-  overlap odds, at proportional easyocr compute cost (~0.15-0.18s/crop CPU; a full half at
-  the current budget takes ~55-60 min).
+- **v3 (senior QA pass, 2026-07-03)** — re-aggregated from the cached reads (new
+  `--revote` mode; gate changes never re-OCR). Found and fixed three defects the v2
+  numbers hid: (1) **most v2 "confident" metas (14/22 p1, 13/20 p2) had team=None** —
+  close-up singleton tracks outside pitch-based consolidation, ironically the BEST reads
+  (9/9, 10/10 unanimous) — and silently could not resolve in the export or be checked
+  for uniqueness/cross-half consistency. Fixed with a per-track classifier-team fallback
+  (the record now carries its own `team`). (2) A **confidently wrong-team binding**
+  (p2 meta 35314 "team1 #5") and v1's bok-jed wrong number shared one geometry: number
+  evidence from a minor/lone constituent of a multi-track meta. Replaced the blunt
+  `votes>=4` (which had masked one instance by luck and cost two correct answers) with
+  structural gates at `vote_min=3`: **corroboration** (support must include the meta's
+  dominant track or span >=2 member tracks), **conflict veto** (a losing number with >=3
+  reads from one member track = two players merged into one meta — abstain), and a
+  **single-support floor** (a lone supporting track in a multi-track meta needs >=4
+  votes; keeps the 6/6 pixel-verified #44, kills the 3/3 wrong "26"). (3) bok-jed meta
+  136 shipped #24 while its own member track read 3/3 "33" — caught by the conflict veto.
+  Post-QA scorecard: **23 (p1) / 18 (p2) / 6 (bok-jed) usable confident metas — all with
+  teams; zero wrong answers on the 13 ground-truth tracks; zero uniqueness violations;
+  sut-mla cross-half number consistency 62% / 60% (gate >=60%, was 0%/33%)**, with 11
+  matched cross-half numbers (#44 pixel-verified same player).
+- **Remaining honest gap — numbers rarely attach to event participants yet**: only ~6
+  confident metas per half are consolidation-connected; the rest are close-up fragments
+  that never appear in events (no trusted pitch frames). Wide-shot boxes are mostly
+  under the 90px legibility floor, so the event-bearing fragments of a player seldom
+  produce reads — no number is yet event-attached in BOTH halves, so the report's top
+  passers still show no unified `#N` pair (export mechanism verified correct and waiting
+  on recall). Levers: bigger per-track frame cap / lower height floor with a stronger
+  reader, or batch more matches (~0.15-0.18s/crop CPU; a full half at the current budget
+  takes ~55-60 min).
 
 Run: `python -m src.jersey_ocr --match sut-mla --half 2` (extraction) and `--eval` (ground
 -truth accuracy + uniqueness + cross-half overlap report, against a small hand-labeled
