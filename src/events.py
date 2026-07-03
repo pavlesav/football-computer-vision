@@ -802,7 +802,9 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
                            index_start: int = 0, possession: int = 1,
                            possession_team: Optional[int] = None,
                            idmap: Optional[dict] = None,
-                           meta_map: Optional[dict] = None) -> tuple:
+                           meta_map: Optional[dict] = None,
+                           meta_team: Optional[dict] = None,
+                           jersey_numbers: Optional[dict] = None) -> tuple:
     """SB records for one period's events.
 
     Continuation state (``index_start`` / ``possession`` / ``possession_team``)
@@ -811,7 +813,10 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
     period (period 1 keeps raw ids). ``meta_map`` (track→meta-track from
     :func:`src.identity.meta_map`) keys player stats to consolidated players
     instead of ephemeral tracks — without it a match's "top passer" is
-    whichever fragment of a player kept one BoT-SORT id longest. Returns
+    whichever fragment of a player kept one BoT-SORT id longest. ``meta_team``
+    (:func:`src.identity.meta_teams`) and ``jersey_numbers``
+    (:func:`src.jersey_ocr.load_jersey_numbers`) together resolve confident
+    metas to a period-independent shirt-number identity. Returns
     ``(records, possession, possession_team)``.
     """
     import uuid
@@ -829,10 +834,13 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
     # Goalkeepers get a period-independent identity: the roles signature is
     # positionally certain, so team T's GK is the same player in both halves
     # (barring a GK substitution) — the one cross-half merge we can make
-    # honestly. Outfield cross-half ReID was measured and rejected: the
-    # team-classifier embeddings carry no within-team identity signal
-    # (P(same-player pair closer) = 0.43, i.e. chance).
+    # honestly. Outfield cross-half ReID via appearance was measured and
+    # rejected: the team-classifier embeddings carry no within-team identity
+    # signal (P(same-player pair closer) = 0.43, i.e. chance). Jersey-number
+    # OCR (:mod:`src.jersey_ocr`) is the outfield path: same team + same
+    # confidently-read shirt number in both halves = same player.
     GK_ID_BASE = 900000
+    JERSEY_ID_BASE = 800000
 
     def resolve_player(tid: int) -> dict:
         if int(tid) < 0:            # oracle goals have no identified scorer
@@ -848,6 +856,14 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
         if int(tid) in gk_tracks:
             team = gk_tracks[int(tid)]
             return {"id": GK_ID_BASE + team, "name": f"goalkeeper-t{team}"}
+        if jersey_numbers and meta_map is not None and meta_team is not None:
+            mid = int(meta_map.get(int(tid), tid))
+            jn = jersey_numbers.get(mid)
+            if jn is not None and mid in meta_team:
+                num = int(jn["number"])
+                team = int(meta_team[mid])
+                return {"id": JERSEY_ID_BASE + team * 1000 + num,
+                        "name": f"#{num}", "jersey_number": num}
         if meta_map is not None:
             mid = int(meta_map.get(int(tid), tid))
             return {"id": ns(mid), "name": f"player-m{mid}{suffix}"}
@@ -941,23 +957,27 @@ def _sb_meta(slug: str, periods: list) -> dict:
         "schema": "statsbomb-events-v4-shaped",
         "coordinates": "120x80, attack-direction normalized (left->right "
                        "per acting team)",
-        "players": "BoT-SORT track ids unless named via data/identities; "
-                   f"period-2 ids offset by {PERIOD_TID_OFFSET} (no "
-                   "cross-half ReID yet)",
+        "players": "BoT-SORT track ids unless named via data/identities or "
+                   "resolved to a shirt number (src.jersey_ocr, id "
+                   f"800000+team*1000+number, period-independent); "
+                   f"remaining unnumbered ids offset by {PERIOD_TID_OFFSET} "
+                   "in period 2 (no cross-half ReID for them)",
         "periods": periods,
         "source": "polutka football-computer-vision pipeline",
     }
 
 
 def export_events(events: list[Event], slug: str, summary: dict,
-                  fps: float = 25.0, meta_map: Optional[dict] = None) -> Path:
+                  fps: float = 25.0, meta_map: Optional[dict] = None,
+                  meta_team: Optional[dict] = None,
+                  jersey_numbers: Optional[dict] = None) -> Path:
     """Single-period export → ``output/events/{slug}_p{N}_events.json``."""
     from .identity import load_identity_map
     Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     period = events[0].period if events else 1
     recs, _, _ = _sb_records_for_period(
         events, slug, summary, idmap=load_identity_map(slug, period),
-        meta_map=meta_map)
+        meta_map=meta_map, meta_team=meta_team, jersey_numbers=jersey_numbers)
     payload = {
         "slug": slug,
         "meta": _sb_meta(slug, [period]),
@@ -1065,12 +1085,18 @@ def inject_oracle_goals(slug: str, halves: list) -> int:
 
 
 def export_match_events(slug: str, halves: list,
-                        meta_maps: Optional[dict] = None) -> Path:
+                        meta_maps: Optional[dict] = None,
+                        meta_teams: Optional[dict] = None,
+                        jersey_maps: Optional[dict] = None) -> Path:
     """Match-level export: ``halves`` is ``[(events, summary, period), ...]``
     → one ``output/events/{slug}_events.json`` with a running event index,
     possession numbering that continues across halves, and per-period
     summaries preserved under ``summary.periods_detail``. ``meta_maps``:
-    {period: track→meta map} for player consolidation."""
+    {period: track→meta map} for player consolidation. ``meta_teams``:
+    {period: meta→team map} and ``jersey_maps``: {period: meta→jersey-number
+    dict} together resolve confident metas to a period-independent
+    shirt-number identity (:mod:`src.jersey_ocr`) — this is what actually
+    unifies an outfield player's stats across halves in the merged export."""
     from .identity import load_identity_map
     Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     halves = sorted(halves, key=lambda h: h[2])
@@ -1087,7 +1113,9 @@ def export_match_events(slug: str, halves: list,
             events, slug, summary, index_start=len(recs),
             possession=possession, possession_team=possession_team,
             idmap=load_identity_map(slug, period),
-            meta_map=(meta_maps or {}).get(period))
+            meta_map=(meta_maps or {}).get(period),
+            meta_team=(meta_teams or {}).get(period),
+            jersey_numbers=(jersey_maps or {}).get(period))
         recs.extend(r)
 
     match_summary = _match_summary(halves)
@@ -1119,14 +1147,16 @@ def export_match_events(slug: str, halves: list,
 
 def main():
     from .game_state import available_periods
-    from .identity import meta_map as build_meta_map
+    from .identity import meta_map as build_meta_map, meta_teams as build_meta_teams
+    from .jersey_ocr import load_jersey_numbers
     ap = argparse.ArgumentParser(description="Detect events from a persisted game state")
     ap.add_argument("--match", default="sut-mla")
     ap.add_argument("--half", type=int, default=None, choices=[1, 2],
                     help="export just this period; default: all stored "
                          "periods merged into one match-level file")
     ap.add_argument("--raw_tracks", action="store_true",
-                    help="skip meta-track consolidation of player ids")
+                    help="skip meta-track consolidation of player ids "
+                         "(also disables jersey-number resolution)")
     args = ap.parse_args()
 
     if args.half is not None:
@@ -1136,26 +1166,33 @@ def main():
         if n_goals:
             print(f"[p{args.half}] {n_goals} oracle goal(s) injected")
         mm = None if args.raw_tracks else build_meta_map(gs)
-        path = export_events(events, args.match, summary, meta_map=mm)
+        mt = None if args.raw_tracks else build_meta_teams(gs)
+        jn = None if args.raw_tracks else load_jersey_numbers(args.match, args.half)
+        path = export_events(events, args.match, summary, meta_map=mm,
+                             meta_team=mt, jersey_numbers=jn)
         print(f"\n=== {args.match} p{args.half}: {len(events)} events ===")
         print(json.dumps(summary, indent=2))
         print(f"Saved -> {path}")
         return
 
     halves = []
-    meta_maps = {}
+    meta_maps, meta_teams_by_p, jersey_maps = {}, {}, {}
     for p in available_periods(args.match):
         gs = GameState.load(args.match, period=p)
         events, summary = detect_events(gs)
         halves.append((events, summary, p))
         if not args.raw_tracks:
             meta_maps[p] = build_meta_map(gs)
+            meta_teams_by_p[p] = build_meta_teams(gs)
+            jersey_maps[p] = load_jersey_numbers(args.match, p)
         print(f"[p{p}] {len(events)} events, "
               f"possession {summary['possession_pct']}")
     n_goals = inject_oracle_goals(args.match, halves)
     if n_goals:
         print(f"{n_goals} oracle goal(s) injected")
-    path = export_match_events(args.match, halves, meta_maps=meta_maps)
+    path = export_match_events(args.match, halves, meta_maps=meta_maps,
+                               meta_teams=meta_teams_by_p,
+                               jersey_maps=jersey_maps)
     payload = json.loads(path.read_text())
     print(f"\n=== {args.match}: {payload['summary']['n_events']} events "
           f"across periods {payload['summary']['periods']} ===")
