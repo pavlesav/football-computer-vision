@@ -193,6 +193,15 @@ def meta_map(gs) -> dict:
     return dict(zip(m.track_id.astype(int), m.meta_id.astype(int)))
 
 
+def meta_teams(gs) -> dict:
+    """{meta_id: team} — every track within a meta already shares one team
+    by construction (union() only merges same-team tracks), so any
+    constituent row's team is unambiguous. Used by jersey-number resolution
+    (:mod:`src.jersey_ocr`, export-layer team lookup in :mod:`src.events`)."""
+    m = consolidate_tracks(gs)
+    return dict(zip(m.meta_id.astype(int), m.team.astype(int)))
+
+
 def consolidation_report(meta: pd.DataFrame) -> str:
     per = meta.groupby("meta_id").agg(tracks=("track_id", "size"),
                                       frames=("frames", "sum"),
