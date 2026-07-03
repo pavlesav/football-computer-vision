@@ -258,7 +258,7 @@ def render_report(slug: str, out_path: Path = None) -> Path:
     fig.text(0.05, 0.905,
              f"pipeline: {summary['n_events']} events, homography trusted on "
              f"{summary.get('homography_trusted_pct', '?')}% of frames; "
-             f"unnamed players are tracker ids",
+             f"player-m ids are consolidated (unnamed) tracker identities",
              fontsize=9, color="#888")
 
     # stats block (top-left)

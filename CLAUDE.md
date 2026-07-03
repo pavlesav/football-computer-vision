@@ -43,10 +43,12 @@ football-computer-vision/
 │   ├── dataset.py                     # Training data management, train/val split
 │   ├── run_pnlcalib_video.py          # PnLCalib homography on video clips
 │   ├── run_demo.py                    # Demo clip renderer: tracking + names + speed/distance + minimap (legacy showcase)
-│   ├── game_state.py                  # Persisted per-frame game-state artifact (Parquet) — the perception↔analysis boundary
-│   ├── pipeline.py                    # PerceptionPipeline: runs perception once → output/game_state/{slug}/
+│   ├── game_state.py                  # Persisted per-frame game-state artifact (Parquet, per half) — the perception↔analysis boundary
+│   ├── pipeline.py                    # PerceptionPipeline: runs perception once → output/game_state/{slug}/p{N}/ (partial writes every 15k frames)
 │   ├── ball_tracker.py                # Pitch-space Kalman ball tracker over the game state (no GPU/video)
-│   ├── events.py                      # Possession/kicks → touches → spells → events → StatsBomb-v4-shaped JSON
+│   ├── events.py                      # Possession/kicks → touches → spells → per-half + merged match SB JSON (+ oracle goals)
+│   ├── score_ocr.py                   # Scoreboard goal-oracle: sweep score graphics, OCR digits → certain goals, bracketed timing
+│   ├── report.py                      # One-page match report (mplsoccer) from the merged SB JSON → output/reports/{slug}/
 │   ├── roles.py                       # Attack direction (defensive-shape vote) + GK identification (positional signature)
 │   ├── identity.py                    # Track→meta-track consolidation + naming widget + data/identities/{slug}.json
 │   ├── team_repair.py                 # Kit-hue audit of track team labels (flip clear errors, flag ID-swap suspects)
@@ -82,8 +84,9 @@ football-computer-vision/
 │   ├── classifiers/                   # Per-game {slug}_classifier.pkl + {slug}_labels.npz
 │   ├── classifier_validation/         # Annotated 2-min clips for visual QC of team classification
 │   ├── demo/                          # Demo MP4s (`{slug}_{ts}_demo.mp4`, `{slug}_{ts}_discover.mp4`)
-│   ├── game_state/{slug}/             # players/frames/ball parquet + meta.json (cache-once perception output)
-│   └── events/                        # {slug}_events.json — StatsBomb-lite event data
+│   ├── game_state/{slug}/p{1,2}/      # players/frames/ball parquet + embeddings.npz + meta.json per half
+│   ├── events/                        # {slug}_events.json (match) + {slug}_p{N}_events.json + {slug}_goal_oracle.json
+│   └── reports/{slug}/                # One-page match report PNG
 ├── notebooks/
 │   ├── 01_team_classification.ipynb   # Per-game labeling widget → KNN classifier + labels.npz + review + validation
 │   ├── 02_homography.ipynb            # Homography visualization + model comparison
@@ -99,10 +102,11 @@ football-computer-vision/
 
 1. ~~**Broadcast analysis**~~ — Done. Unsupervised period detection works on all 16 matches (15 PASS, 1 WARN).
 2. **Pitch homography** — In progress. PnLCalib pretrained model + post-processing (v2), Lucas-Kanade optical-flow propagation (`camera_motion.py`), and manual seeds (`manual_calibration.py`) all wired into the runner. v2 averages 71% coverage across 16 matches. The demo notebook (`04_demo_video.ipynb`) added a label/calibrate/compare iteration loop with a line-adjust ground-truth widget seeded from the pipeline's own P. Next step: use that loop on a representative clip to diagnose the residual drift/wrong-overlay failures (PnLCalib output vs `refine_projection_to_lines` bias vs flow-propagated bad seed) and tighten whichever stage is responsible.
-3. **Event detection** — Working at **full-half scale, golden-measured**. `src.pipeline` persists a per-frame **game state**; ball tracker + roles (attack direction, GKs) + rule-based events derive a StatsBomb-v4-shaped stream. Golden scorecard: pass precision 0.70 / recall 0.88 (sut-mla, 16 golden passes), 1.00/1.00 (bud-sut segment), carrier 98-100% when assigned. Full sut-mla FH: 468 passes (incl. 28 GK) / 55-45 possession / 107 possession changes at 55.9% trusted coverage. Remaining error classes are *named*: throw-in restarts, ID swaps, shot outcomes (all 7 old "shots" were nearest-goal-guess artifacts; now 0 until the scoreboard goal-oracle exists).
+3. **Event detection** — Working at **full-half scale, golden-measured**. `src.pipeline` persists a per-frame **game state**; ball tracker + roles (attack direction, GKs) + rule-based events derive a StatsBomb-v4-shaped stream. Golden scorecard: pass precision 0.70 / recall 0.88 (sut-mla, 16 golden passes), 1.00/1.00 (bud-sut segment), carrier 98-100% when assigned. Full sut-mla FH: 468 passes (incl. 28 GK) / 55-45 possession / 107 possession changes at 55.9% trusted coverage. Remaining error classes are *named*: throw-in restarts, ID swaps, non-goal shot outcomes (goals now come from the scoreboard goal-oracle; the direction-aware shot rule found 1 pixel-verified true positive on the full match).
 4. **Cross-shot player matching** — First version working (`src/identity.py`): GK tracks merge via roles; outfield via team + kinematic continuity + a meta-level long-gap/short-distance pass. bud-sut: 320 tracks → 78 metas, top-40 = 88% of player-frames. Close-up-heavy halves fragment (sut-mla FH 27%) pending appearance ReID — `pipeline.py` now persists per-track mean embeddings (`embeddings.npz`) so that upgrade needs no perception re-run.
 5. **Jersey number / player identity** — Naming workflow exists: `build_identity_widget` (best-crop gallery per meta-track, ~10-15 min/match with public lineups) → `data/identities/{slug}.json` → export resolves `player: {id, name, jersey_number}` automatically.
-6. **NEXT: "First complete match" milestone** — the product unit is a match and none exists yet: (a) restructure artifacts per half (`output/game_state/{slug}/p1|p2/` — currently a second run OVERWRITES the slug dir), (b) run sut-mla second half + merge periods into one SB events file (halftime direction flip, period-2 timestamps, continuous possession numbering), (c) **scoreboard goal-oracle**: OCR the score digits (clock-OCR infra already reads that region) — a score change is a certain goal, anchoring shots/goals, (d) first match report from the SB JSON via mplsoccer. Then batch Tier-1/2 matches, then the correction UI (Milestone 4) informed by real per-match error volumes.
+6. ~~**"First complete match" milestone**~~ — **Done (2026-07-03), sut-mla is the first complete match**: per-half artifacts (`p1|p2`, legacy flat dirs still load), both halves processed + stabilized, one merged SB events JSON (1,434 events, 877 passes, possession 54/46, 207 possession changes, attack directions verified to flip at halftime), **scoreboard goal-oracle** (`src/score_ocr.py`) pixel-validated — final score OCR 1-0 == real result, the goal anchored within ~1s of the ball crossing the line — and the **first one-page match report** (`src/report.py`, mplsoccer). Key insight from QC: the goal happened on a close-up camera where events are correctly paused, so the oracle is the *only* honest source of goals.
+7. **NEXT: batch Tier-1/2 matches** (perception 2 halves/match overnight + score_ocr + events + report per match; launch runs detached — a harness-tied background run died at 90% once), then the correction UI informed by real per-match error volumes, then cross-half appearance ReID (embeddings already persisted per artifact).
 
 ## Data Flow (01_team_classification.ipynb)
 
@@ -314,17 +318,22 @@ persisted; analysis is instant and needs no video. This is the SoccerNet
 Game-State-Reconstruction intermediate representation (per-frame players with pitch XY +
 team, ball, camera), applied to our custom 1.CFL-tuned stack.
 
-**`game_state.py` — the artifact.** Per-match Parquet under `output/game_state/{slug}/`:
+**`game_state.py` — the artifact.** Per-HALF Parquet under `output/game_state/{slug}/p{period}/`
+(legacy flat `{slug}/` dirs still load; `available_periods(slug)` lists what exists):
 - `players.parquet` — one row per (frame, track_id): `team_id`, image bbox, `foot_xy_img`,
   `pitch_x/pitch_y` (metres on 105×68, NaN if no projection), `conf`.
-- `frames.parquet` — one row per frame: `time_sec`, `period`, `is_gameplay`, `is_wide_shot`,
+- `frames.parquet` — one row per frame: `time_sec` (relative to THAT half's kickoff —
+  period-2 timestamps restart at 00:00), `period`, `is_gameplay`, `is_wide_shot`,
   `has_P`, `homog_source`, `homog_conf`, flattened 3×4 `P00..P23`, and the *best raw* ball
   detection (`ball_pitch_x/y`, `ball_source` ∈ detected/none).
 - `ball.parquet` — one row per raw ball candidate detection (`frame, x1..y2, conf`); a
   frame can have 0..n. This is what `ball_tracker.py` consumes.
-- `meta.json` — slug, video, fps, frame range, `homog_source_counts`, track/team counts.
-- `GameState.load(slug)` returns the DataFrames + helpers (`get_P`, `players_at`,
-  `ball_trajectory`, `ball_candidates`).
+- `embeddings.npz` — per-track mean ResNet embeddings (for the future ReID upgrade).
+- `meta.json` — slug, video, fps, period, frame range, `partial` flag,
+  `homog_source_counts`, track/team counts.
+- `GameState.load(slug, period=N)` returns the DataFrames + helpers (`get_P`, `players_at`,
+  `ball_trajectory`, `ball_candidates`) + `gs.dir`/`gs.period`; `period=None` auto-resolves
+  only when unambiguous (single stored period or legacy flat artifact).
 
 **`pipeline.py` — `PerceptionPipeline`.** Extracts the per-frame loop that was **duplicated**
 in `run_demo.py` / `run_pnlcalib_video.py` and writes a `GameState` instead of rendering.
@@ -334,7 +343,13 @@ the homography fallback chain (`predict_one_frame` → `CameraMotionTracker.prop
 `check_line_alignment` / `is_gameplay_frame`), storing `_line_alignment_score` as
 `homog_conf`; `project_foot` / `is_wide_shot`; and the saved `TeamClassifier`
 (sampled ResNet embeddings → track-level majority vote, joined back after the pass).
-Run: `python -m src.pipeline --match sut-mla --offset_min 10 --duration_sec 60`.
+Writes a **complete partial artifact every 15k frames** (`--checkpoint_every`, 0=off) so a
+crashed multi-hour run keeps everything up to the last checkpoint (a 4h run died at 90%
+once). Track ids restart per run — p1 and p2 track id spaces COLLIDE; anything match-level
+must namespace them (the SB export offsets period-2 ids by `PERIOD_TID_OFFSET`).
+Run: `python -m src.pipeline --match sut-mla --half 2 --offset_min 0 --duration_sec 2981 --pnl_stride 3`.
+Long runs: launch DETACHED from the harness (a harness-tied background run gets orphaned or
+killed when the session ends), then `python -m src.stabilize --match X --half N --apply`.
 
 **`events.py` — rule-based events.** Possession-then-event decision tree (Anzer/Bauer,
 PLOS One 2024): ball carrier per frame (nearest player within `POSSESSION_RADIUS_M`,
@@ -347,8 +362,45 @@ touches; deflections don't flip possession) → Pass / Carry / Shot + Ball Recov
 spell boundaries. Dead-ball logic (`dead_ball_frames`) suppresses carrier/kicks from when
 the ball crosses the boundary until the restart. Export is **StatsBomb-v4-shaped**
 (type ids, possession sequences, Ball Receipt* after completes, pass length/angle,
-outcomes omitted on completes; declared deviations in `meta`: coords not
-attack-normalized, players are track ids).
+outcomes omitted on completes), attack-normalized, with player stats keyed to
+consolidated meta-tracks (`player-m{N}`; real names when `data/identities/{slug}.json`
+exists; `--raw_tracks` disables consolidation).
+
+**Match-level export.** `python -m src.events --match X` with no `--half` detects events
+on every stored period and merges them into ONE `output/events/{slug}_events.json`:
+running event index, possession numbering continues across halftime, period-2 minutes
++= 45 (timestamps restart per period), period-2 player ids offset by
+`PERIOD_TID_OFFSET=100000` and suffixed `-h2` (no cross-half ReID yet), a halftime
+attack-direction-flip sanity check, and per-period summaries under
+`summary.periods_detail`. Oracle goals (below) are injected as Shot/outcome Goal (id 97).
+`--half N` exports a single period to `{slug}_p{N}_events.json` instead.
+
+## Scoreboard Goal-Oracle (`src/score_ocr.py`) & Match Report (`src/report.py`)
+
+Goals cannot be trusted from tracking data alone — QC showed the sut-mla goal happened on
+a close-up camera where events are correctly paused. The broadcast graphics announce the
+score instead: `score_ocr` sweeps the video for the two 1.CFL score graphics (intermittent
+top-left `MM:SS | SUT 1 0 MLD` scoreboard; rare bottom red banner at kickoff/goal/HT/FT),
+OCRs the digits (easyocr on CPU; the white-on-red scoreboard digits need a digit-allowlist
+read of the 4x-upscaled box crop — generic OCR misses them), majority-filters misreads,
+and converts each monotonic score step into a **certain goal**. Timing anchor
+(pixel-calibrated): tight bracket (≤30s) → the last old-score reading (~1s from the real
+goal; the operator updates AFTER the ball crosses); wide bracket → first sighting of the
+new score. Readings are cached (`{slug}_score_readings.json`), so re-derivation is
+instant. Team mapping is manual: `--home_team {0|1}` (home = left team on the graphics;
+verify via kit colors — sut-mla home team1 = Sutjeska blue). Validated on sut-mla:
+final score OCR 1-0 == FT banner == real result; bracket [97650, 97900] contains the
+verified ball-in-net frame at its left edge.
+
+`report.py` renders the one-page analyst deliverable from the merged JSON (mplsoccer):
+score header (club names from slug via `CLUB_NAMES`), stats block, pass-volume momentum
+strip with goal stars + HT line, per-team pass maps (attack-normalized →), shot/goal map
+(goal locations marked as estimated), top passers (consolidated ids or real names) →
+`output/reports/{slug}/{slug}_match_report.png`.
+
+Run order per match: perception both halves → stabilize both → `score_ocr --home_team N`
+→ `events` (merged) → `report`. First complete match: **sut-mla, 1,434 events, 877
+passes, possession 54/46, goals 1-0 (matches the real result)**.
 
 **`golden_eval.py` + `data/golden_events/` — ground truth.** Hand-labeled ball-control
 intervals + passes (built by frame-stepping contact sheets of ball-centered crops).
@@ -445,9 +497,10 @@ ghost-derived possession eliminated. Run: `python -m src.ball_tracker --match su
 
 - **Team classification** works well on ~10/16 matches, struggles on ~6 where jersey colors are similar or lighting is difficult. All 16 matches labeled and validated via 2-min annotated clips. Majority vote per track is more robust than a single median-embedding prediction but ID swaps from long occlusions can still cause systematic errors.
 - **Referee/GK filtering** — GKs are now identified positionally (`src/roles.py`: deepest-player-in-frame ≥70% + goal-zone residence) and folded into possession with the defending team; refs are excluded by the same signature. The old GMM-probability idea is superseded.
-- **Shots are currently 0** — the 7 previously-detected shots were artifacts of the nearest-goal guess (deep clearances read as shots at a team's own goal) and vanished once shots must target the goal the team actually attacks. Trustworthy shots/goals need the **scoreboard goal-oracle** (score-digit OCR; a score change is a certain goal).
+- **Shots are conservative; goals come from the oracle** — direction-aware validation removed all 7 nearest-goal artifacts; the detector now finds only clear on-target attempts (1 on the sut-mla full match, pixel-verified real). Goals are supplied by the scoreboard goal-oracle with certainty but estimated location and unknown scorer; shot outcomes other than Goal remain Unknown.
+- **No cross-half player identity** — track ids restart per half; the merged export namespaces period-2 ids (`player-mN-h2`), so one player is two rows across halves until appearance ReID (embeddings.npz already persisted).
+- **Goal-oracle team mapping is manual** — pass `--home_team {0|1}` per match (graphics say home/away; classifier team indices are arbitrary).
 - **Throw-in/restart semantics half-handled** — dead-ball suppression works when the ball's tracked position crosses the boundary, but homography error near the touchline sometimes keeps the out-ball "inside", minting restart-period false passes (golden segA class).
-- **Per-slug artifact overwrite** — `output/game_state/{slug}/` holds ONE window; running another window (e.g. the second half) overwrites it. Restructure to per-half subdirs before match-level processing.
 - **Pitch homography** — PnLCalib v2 averages 71% coverage across 16 matches. Tier 1 matches (7 of 14 working) are at 84-100%. Tier 3 matches (3 of 14) are at 10-43% due to night/dusk conditions, oblique cameras, and running tracks. Two matches crash with OpenCV errors. No camera motion estimation yet — each frame is processed independently.
 - **Ball tracking** (`ball_tracker.py` KF) can only bridge gaps bounded by trusted detections; a kick followed by a blackout *and* no re-acquisition within 2.4s still loses the ball, and airborne balls project with overshoot while high (z=0 plane assumption). Possession during long blackouts is honestly unknown — a real opponent touch inside one is missed, not misattributed.
 - **ars-dec source video** has a ~3:14 recording gap at the start of the second half — the second-half recording begins with the match clock already at 48:14. Period detection correctly flags this via its 42-min gap warning, but downstream event detection on ars-dec SH will be missing the first ~3 min of gameplay.
