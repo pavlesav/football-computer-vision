@@ -1,5 +1,6 @@
 """
-Demo video for FSCG presentation.
+Demo clip renderer (legacy showcase; kept because it shares perception code
+with the pipeline and is useful for eyeballing).
 
 Pipeline per frame: YOLO + BoT-SORT for player/ball detection, smoothed
 manual-seed homography (data/manual_calibration/), manual ball annotations
