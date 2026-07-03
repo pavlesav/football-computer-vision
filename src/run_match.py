@@ -101,6 +101,14 @@ def process_match(slug: str, home_team: int, pnl_stride: int = 3,
         else:
             _run(slug, step, ["src.stabilize", "--match", slug,
                               "--half", str(period), "--apply"])
+        step = f"jersey_p{period}"
+        if status.get(step) or (game_state_dir(slug, period)
+                                / "jersey_numbers.json").exists():
+            print(f"[{slug}] {step}: done - skip", flush=True)
+        else:
+            # CPU-only (easyocr); ~1h per half at the default crop budget.
+            _run(slug, step, ["src.jersey_ocr", "--match", slug,
+                              "--half", str(period)])
 
     if status.get("score_ocr"):
         print(f"[{slug}] score_ocr: done - skip", flush=True)

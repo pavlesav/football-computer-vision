@@ -848,10 +848,24 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
         info = idmap.get(int(tid))
         suffix = "" if period == 1 else f"-h{period}"
         if info:
-            name = info.get("name") or f"#{info.get('number')}"
-            rec = {"id": ns(tid), "name": name}
-            if info.get("number") is not None:
-                rec["jersey_number"] = int(info["number"])
+            number = info.get("number")
+            name = info.get("name") or f"#{number}"
+            mid = int(meta_map.get(int(tid), tid)) if meta_map else int(tid)
+            # A human-confirmed number gets the same period-independent id
+            # scheme as OCR'd numbers, so review-confirmed players unify
+            # across halves by id (not just by display name).
+            team = None
+            if number is not None:
+                jrec = (jersey_numbers or {}).get(mid)
+                team = (jrec or {}).get("team")
+                if team is None and meta_team is not None:
+                    team = meta_team.get(mid)
+            if number is not None and team is not None:
+                return {"id": JERSEY_ID_BASE + int(team) * 1000 + int(number),
+                        "name": name, "jersey_number": int(number)}
+            rec = {"id": ns(mid), "name": name}
+            if number is not None:
+                rec["jersey_number"] = int(number)
             return rec
         if int(tid) in gk_tracks:
             team = gk_tracks[int(tid)]
