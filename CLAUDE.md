@@ -487,12 +487,16 @@ shirts: torso crop from each stored bbox (`y1+0.12h..y1+0.55h`, `x1+0.15w..x2-0.
 boxes `h>=90px` only, 4x upscale), `easyocr` with a digit allowlist
 (`readtext(..., allowlist="0123456789")`, accept only conf ≥ 0.5, 1-2 digits parsing to
 1..99). Reads are collected per track, mapped to meta-tracks via
-`identity.meta_map`, and voted: a meta ships a number only with `votes >= 4` AND
-`agreement = votes/reads >= 0.6` (raised from an initial `votes >= 3` — see below). A
-uniqueness pass then keeps the higher-vote meta and drops the other whenever two metas of
-the same (team, period) claim the same number. Writes
+`identity.meta_map`, and voted: a meta ships a number only with `votes >= 3`,
+`agreement = votes/reads >= 0.6`, AND the v3 structural gates (corroboration, conflict
+veto, single-support floor — see the v3 bullet below; these, not a higher vote floor,
+are what protect against consolidation-merge errors). Teams come from consolidation
+with a per-track classifier-team fallback for close-up singleton metas, and are stored
+ON the record. A uniqueness pass then keeps the higher-vote meta and drops the other
+whenever two metas of the same (team, period) claim the same number. Writes
 `output/game_state/{slug}/p{N}/jersey_numbers.json`
-(`meta_numbers` + per-track `track_reads` for ID-swap diagnostics + `params`). Export
+(`meta_numbers` + per-track `track_reads` for ID-swap diagnostics + `params`);
+`--revote` re-aggregates from the cached reads after gate changes without re-OCR. Export
 integration (`events.py: resolve_player`): a confident meta resolves to
 `{id: 800000+team*1000+number, name: "#N", jersey_number: N}` — period-independent, so
 the SAME id aggregates a player's stats across both halves. Priority order: named
