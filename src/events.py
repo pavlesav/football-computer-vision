@@ -68,6 +68,26 @@ DEAD_BALL_COOLDOWN = 12       # frames back in bounds before play resumes
 # proximity+speed gating alone cannot see running one-touches).
 KICK_DV_MS = 6.0              # velocity change (m/s) that counts as a kick
 KICK_RADIUS_M = 4.0           # kicker must be within this of the ball
+# A kick changes velocity, not position: an estimate that teleports between
+# consecutive rows is the tracker re-acquiring a different ball (golden segA:
+# a 25 m reinit jump from a false mid-pitch ball onto the real throw-in ball
+# read as dv≈40 m/s and minted two fake kick-passes). Fastest real ball
+# ≈ 40 m/s ≈ 1.6 m/frame; consecutive estimates ≤3 frames apart stay < 5 m.
+MAX_KICK_JUMP_M = 5.0
+# Restart (throw-in / corner / goal-kick) handling: a slow ball parked on the
+# boundary is a restart being set up, not open play (the thrower's ball
+# projects 0.1 m INSIDE the line — position-crossing alone misses it).
+STICKY_LINE_M = 0.4           # ball within this of a line (or beyond) ...
+STICKY_MAX_SPEED = 5.0        # ... and slower than this ...
+STICKY_FRAMES = 6             # ... for this many estimates ⇒ dead (restart setup)
+MIN_DEAD_RUN_FRAMES = 30      # sticky-triggered dead runs shorter than this
+                              # (1.2 s) are homography flicker, not a restart
+                              # — a real out-to-restart cycle takes seconds
+RESTART_TOUCH_WINDOW_S = 3.0  # first touch within this of resume = the restart
+RESTART_THROWER_R_M = 4.0     # restart taker must be within this of the dead ball
+RESTART_LINE_MAX_M = 4.0      # restart out-point must be this close to a line
+                              # (dead runs with mid-pitch ball estimates are
+                              # tracker garbage — no pass synthesis from them)
 MIN_PASS_DIST_M = 4.0         # travel below this on a turnover ⇒ duel, not a pass
 MIN_CARRY_DIST_M = 3.0        # displacement within a touch to log a Carry
 SHOT_FINAL_THIRD_M = 70.0     # touch beyond this (or before 35) can start a shot
@@ -122,27 +142,110 @@ def dead_ball_frames(ball: pd.DataFrame) -> set:
     """Frames where the ball is out of play: from the moment it crosses the
     pitch boundary until it has been back in bounds for DEAD_BALL_COOLDOWN
     (the restart). Shared by carrier assignment AND kick detection — kicks
-    minted during throw-in retrieval fabricated passes (golden segA)."""
+    minted during throw-in retrieval fabricated passes (golden segA).
+
+    Two triggers:
+      * position beyond the boundary margin (the original rule), and
+      * a slow ball parked ON the line for STICKY_FRAMES — a restart being
+        set up. Homography error near the touchline keeps a genuinely-out
+        ball's estimate marginally inside (the sut-mla thrower's ball sat
+        0.1 m inside), so crossing alone under-triggers.
+    """
     dead = set()
     dead_state = False
+    entered_by_sticky = False
+    run_start = None
     back_in_since = None
+    sticky_run = 0
     for r in ball.itertuples(index=False):
         if not (r.bx == r.bx):
             continue
         f = int(r.frame)
         oob = (r.bx < -OUT_MARGIN_M or r.bx > PITCH_L + OUT_MARGIN_M
                or r.by < -OUT_MARGIN_M or r.by > PITCH_W + OUT_MARGIN_M)
-        if oob:
-            dead_state = True
+        line_dist = min(r.bx, PITCH_L - r.bx, r.by, PITCH_W - r.by)
+        slow = not (r.speed == r.speed) or r.speed <= STICKY_MAX_SPEED
+        if line_dist <= STICKY_LINE_M and slow:
+            sticky_run += 1
+        else:
+            sticky_run = 0
+        if oob or sticky_run >= STICKY_FRAMES:
+            if not dead_state:
+                dead_state = True
+                run_start = f
+                entered_by_sticky = not oob
+            elif oob:
+                entered_by_sticky = False   # genuine crossing upgrades the run
             back_in_since = None
         elif dead_state:
-            if back_in_since is None:
-                back_in_since = f
-            elif f - back_in_since >= DEAD_BALL_COOLDOWN:
-                dead_state = False
+            if line_dist > STICKY_LINE_M:
+                if back_in_since is None:
+                    back_in_since = f
+                elif f - back_in_since >= DEAD_BALL_COOLDOWN:
+                    # Sticky-only flickers shorter than a real restart cycle
+                    # are homography drift parking the estimate on the line —
+                    # retract them so they can't eat real possession frames.
+                    if entered_by_sticky and f - run_start < MIN_DEAD_RUN_FRAMES:
+                        dead -= set(range(run_start, f + 1))
+                    dead_state = False
+            else:
+                back_in_since = None
         if dead_state:
             dead.add(f)
     return dead
+
+
+def detect_restarts(ball: pd.DataFrame, dead: set, fps: float = 25.0) -> list:
+    """Classify each dead-ball run into a restart: where the ball went out
+    decides the type (touchline → throw-in; goal line → corner when play
+    resumes near the corner, else goal kick). Returns
+    ``[{f_dead0, f_resume, out_xy, resume_xy, type}, ...]`` in frame order."""
+    if not dead:
+        return []
+    pos = {int(r.frame): (r.bx, r.by) for r in ball.itertuples(index=False)
+           if r.bx == r.bx}
+    frames = sorted(dead)
+    runs = []
+    run_start = frames[0]
+    prev = frames[0]
+    for f in frames[1:]:
+        if f - prev > int(fps):          # >1 s gap between dead frames = new run
+            runs.append((run_start, prev))
+            run_start = f
+        prev = f
+    runs.append((run_start, prev))
+
+    out = []
+    for f0, f1 in runs:
+        # Out-point: the estimate closest to a boundary around the dead-run
+        # start (a median over the whole run is poisoned by the tracker
+        # following wrong balls mid-run — measured on golden segA, where the
+        # median sat 30 m infield and named a random player as the taker).
+        window = [pos[f] for f in range(f0 - 10, f0 + int(fps)) if f in pos]
+        if not window:
+            continue
+        ox, oy = min(window, key=lambda p: min(p[0], PITCH_L - p[0],
+                                               p[1], PITCH_W - p[1]))
+        line_dist = min(ox, PITCH_L - ox, oy, PITCH_W - oy)
+        if line_dist > RESTART_LINE_MAX_M:
+            continue        # no credible out-point — suppress, don't guess
+        after = [pos[f] for f in range(f1 + 1, f1 + 1 + int(3 * fps))
+                 if f in pos]
+        rx, ry = (after[0] if after else (ox, oy))
+        # Which boundary was crossed / camped on?
+        d_touch = min(oy, PITCH_W - oy)
+        d_goal = min(ox, PITCH_L - ox)
+        if d_touch <= d_goal:
+            rtype = "throw_in"
+        else:
+            near_corner = (min(ry, PITCH_W - ry) < 8.0
+                           and min(rx, PITCH_L - rx) < 8.0)
+            rtype = "corner" if near_corner else "goal_kick"
+        out.append({"f_dead0": int(f0), "f_resume": int(f1) + 1,
+                    "out_xy": (float(ox), float(oy)),
+                    "resume_xy": (float(rx), float(ry)),
+                    "type": rtype})
+    return out
 
 
 def _effective_players(gs: GameState, trusted: set,
@@ -231,6 +334,10 @@ def detect_kicks(gs: GameState, ball: pd.DataFrame,
         if int(r1.frame) - int(r0.frame) > 3:
             continue
         if r1.source not in ("detected", "bridged"):
+            continue
+        # A kick changes velocity, not position: a teleporting estimate is
+        # the tracker re-acquiring a different ball, not ball contact.
+        if float(np.hypot(r1.bx - r0.bx, r1.by - r0.by)) > MAX_KICK_JUMP_M:
             continue
         dv = float(np.hypot(r1.vx - r0.vx, r1.vy - r0.vy))
         if dv < KICK_DV_MS:
@@ -371,6 +478,96 @@ def _shot_after(touch: Touch, ball: pd.DataFrame,
     return None
 
 
+PATTERN_OF_RESTART = {"throw_in": "From Throw In", "corner": "From Corner",
+                      "goal_kick": "From Goal Kick"}
+
+
+def synthesize_restart_passes(gs: GameState, restarts: list,
+                              touches: list, events: list,
+                              team_override: Optional[dict],
+                              fps: float) -> list:
+    """One Pass event per restart: the taker (nearest player to the dead
+    ball as play resumes) to the first controlled touch. StatsBomb models
+    throw-ins/corners/goal kicks as passes; the ordinary carrier logic can't
+    see them because the taker's touch happens inside the dead-ball window
+    (golden segA throw-in was a measured FN). Skipped when the ordinary
+    logic already produced a pass by the same player nearby in time."""
+    pl = gs.players[gs.players.pitch_x.notna()]
+    if team_override:
+        pl = pl.copy()
+        eff = pl["track_id"].map(team_override)
+        pl["team_id"] = eff.fillna(pl["team_id"]).astype(int)
+    pl = pl[pl.team_id.isin([0, 1])]
+    by_frame: dict[int, list] = defaultdict(list)
+    for r in pl.itertuples(index=False):
+        by_frame[int(r.frame)].append((int(r.track_id), int(r.team_id),
+                                       r.pitch_x, r.pitch_y))
+
+    out = []
+    for rs in restarts:
+        resume = rs["f_resume"]
+        window = int(RESTART_TOUCH_WINDOW_S * fps)
+        cands = [t for t in touches
+                 if resume - 2 <= t.f_start <= resume + window]
+        if not cands:
+            continue
+        first = min(cands, key=lambda t: t.f_start)
+        # The taker: nearest player to the dead-ball spot as play resumes.
+        best, best_d = None, np.inf
+        for f in range(resume - 12, resume + 3):
+            for tid, team, px, py in by_frame.get(f, []):
+                d = float(np.hypot(px - rs["out_xy"][0], py - rs["out_xy"][1]))
+                if d < best_d:
+                    best_d, best = d, (tid, team)
+        if best is None or best_d > RESTART_THROWER_R_M:
+            continue
+        taker, taker_team = best
+        if taker == first.track_id:
+            continue        # taker keeps it (short corner / quick dribble)
+        # The ordinary pipeline may already have caught this pass.
+        already = any(e.type == "Pass" and e.player == taker
+                      and abs(e.frame - resume) <= window for e in events)
+        if already:
+            continue
+        complete = first.team == taker_team
+        details = {
+            "end_location": list(first.xy_start),
+            "outcome": "complete" if complete else "incomplete",
+            "length": round(float(np.hypot(
+                first.xy_start[0] - rs["out_xy"][0],
+                first.xy_start[1] - rs["out_xy"][1])), 2),
+            "play_pattern": PATTERN_OF_RESTART[rs["type"]],
+            "restart": rs["type"],
+        }
+        if complete:
+            details["recipient"] = int(first.track_id)
+        out.append(Event(0, int(gs.meta.get("period", 1)),
+                         int(resume - 1), _tsec(gs, resume - 1), "Pass",
+                         int(taker_team), int(taker),
+                         tuple(rs["out_xy"]), details))
+    return out
+
+
+def tag_play_patterns(events: list, restarts: list, gs: GameState) -> None:
+    """Assign StatsBomb ``play_pattern`` to every event: a restart's pattern
+    holds until the next real possession change (which resets to Regular
+    Play, matching SB semantics where a recovery starts a regular-play
+    possession). The first events of an artifact that begins at kickoff get
+    From Kick Off."""
+    starts_at_kickoff = (len(gs.frames) > 0
+                         and float(gs.frames["time_sec"].iloc[0]) < 10.0)
+    current = "From Kick Off" if starts_at_kickoff else "Regular Play"
+    ri = 0
+    rs = sorted(restarts, key=lambda r: r["f_resume"])
+    for e in sorted(events, key=lambda e: e.frame):
+        while ri < len(rs) and rs[ri]["f_resume"] <= e.frame:
+            current = PATTERN_OF_RESTART[rs[ri]["type"]]
+            ri += 1
+        if e.type == "Possession Change":
+            current = "Regular Play"
+        e.details.setdefault("play_pattern", current)
+
+
 def possession_spells(touches: list[Touch]) -> list[dict]:
     """Group consecutive same-team touches into spells and mark which are
     *real* possession (>= MIN_SPELL_FRAMES or >= SPELL_MIN_TOUCHES touches).
@@ -461,6 +658,13 @@ def detect_events(gs: GameState,
                      "outcome": "interception" if gained else "incomplete",
                      "length": round(travel, 2)})
 
+    # Restarts: synthesize the taker's pass (throw-in/corner/goal kick) and
+    # tag every event's play_pattern.
+    restarts = detect_restarts(ball, dead, fps)
+    events.extend(synthesize_restart_passes(gs, restarts, touches, events,
+                                            gk_map, fps))
+    tag_play_patterns(events, restarts, gs)
+
     events.sort(key=lambda e: (e.frame, e.index))
     for k, e in enumerate(events):
         e.index = k
@@ -469,6 +673,8 @@ def detect_events(gs: GameState,
                              for k, v in directions.attack_ltr.items()}
     summary["attack_direction_confidence"] = round(directions.confidence, 3)
     summary["gk_tracks"] = {int(k): int(v) for k, v in gk_map.items()}
+    summary["restarts"] = {t: sum(1 for r in restarts if r["type"] == t)
+                           for t in ("throw_in", "corner", "goal_kick")}
     return events, summary
 
 
@@ -526,7 +732,17 @@ SB_TYPE = {"Pass": {"id": 30, "name": "Pass"},
            "Shot": {"id": 16, "name": "Shot"},
            "Ball Receipt": {"id": 42, "name": "Ball Receipt*"},
            "Ball Recovery": {"id": 2, "name": "Ball Recovery"}}
-SB_PLAY_PATTERN = {"id": 1, "name": "Regular Play"}
+SB_PLAY_PATTERNS = {
+    "Regular Play":   {"id": 1, "name": "Regular Play"},
+    "From Corner":    {"id": 2, "name": "From Corner"},
+    "From Free Kick": {"id": 3, "name": "From Free Kick"},
+    "From Throw In":  {"id": 4, "name": "From Throw In"},
+    "From Counter":   {"id": 6, "name": "From Counter"},
+    "From Goal Kick": {"id": 7, "name": "From Goal Kick"},
+    "From Keeper":    {"id": 8, "name": "From Keeper"},
+    "From Kick Off":  {"id": 9, "name": "From Kick Off"},
+}
+SB_PLAY_PATTERN = SB_PLAY_PATTERNS["Regular Play"]
 SB_PASS_OUTCOME = {"incomplete": {"id": 9, "name": "Incomplete"},
                    "interception": {"id": 9, "name": "Incomplete"},
                    "out": {"id": 75, "name": "Out"}}
@@ -615,7 +831,9 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
             "minute": minute + minute_offset, "second": second,
             "type": SB_TYPE[etype], "possession": possession,
             "possession_team": _sb_team(possession_team, slug),
-            "play_pattern": SB_PLAY_PATTERN,
+            "play_pattern": SB_PLAY_PATTERNS.get(
+                e.details.get("play_pattern", "Regular Play"),
+                SB_PLAY_PATTERN),
             "team": _sb_team(team, slug), "player": resolve_player(player),
             "location": norm(_to_sb(loc), team),
             "frame": int(e.frame), "pitch_xy": [round(v, 2) for v in loc],
