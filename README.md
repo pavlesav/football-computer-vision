@@ -41,7 +41,7 @@ Full-match broadcast video
 | Pitch Homography | In Progress | PnLCalib v2 + optical-flow + manual seeds, 71% avg coverage; per-frame drift being diagnosed via GT loop |
 | Game State | Done | Cache-once perception artifact (Parquet): players + ball candidates + camera per frame |
 | Ball Tracking | Done | Pitch-space Kalman filter + hindsight gap bridging; tuned via masked-detection eval |
-| Event Detection | Working | Golden-measured: pass precision 0.70 / recall 0.88 (sut-mla), 1.00/1.00 (bud-sut segment); StatsBomb-v4-shaped export, attack-normalized |
+| Event Detection | Working | Golden-measured on 27 passes / 3 matches: combined precision 0.83 / recall 0.89 (Tier-1); restart passes + play_pattern; StatsBomb-v4-shaped export, attack-normalized |
 | Roles & Identity | Working | Attack direction + GK possession integrated; track→meta-track consolidation + naming widget → named exports |
 | Goal Oracle | Done | Scoreboard score-digit OCR → certain goals; sut-mla goal anchored within ~1 s of the pixel-verified moment |
 | First Complete Match | **Done** | sut-mla both halves: 1,434 events, 877 passes, possession 54/46, goals 1-0 (matches real result); merged SB JSON + one-page report |
@@ -234,9 +234,13 @@ stats block, pass-volume momentum with goal stars, per-team pass maps, shot/goal
 top passers → `output/reports/{slug}/`.
 
 ```bash
-python -m src.score_ocr --match sut-mla --home_team 1   # once per match (CPU, ~20 min)
+python -m src.score_ocr --match sut-mla --home_team 1   # once per match (CPU, ~30 min)
 python -m src.events --match sut-mla                    # merged match JSON
 python -m src.report --match sut-mla                    # one-page report PNG
+
+# ...or everything (both halves' perception -> stabilize -> oracle -> events
+# -> report) with one resumable command per match:
+python -m src.run_match --match sut-mla --home_team 1
 ```
 
 ### 7. Demo Video (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)

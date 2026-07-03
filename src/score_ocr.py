@@ -55,17 +55,21 @@ BANNER_RED_ROI = (400, 840, 1500, 1000)     # x1, y1, x2, y2 — presence check
 BANNER_OCR_ROI = (200, 840, 1750, 1010)     # caption + score bar, for OCR
 BANNER_RED_MIN = 0.10                       # red fraction ⇒ banner present
 
-# Top-left scoreboard: score digits sit in red boxes between the team
-# abbreviations. Presence check on the red boxes; the digits are OCR'd from
-# a slightly padded crop of the same region with a digit allowlist (generic
-# text OCR misses the white-on-red digits), the clock from CLOCK_SEARCH_ROI.
-SB_RED_ROI = (380, 50, 500, 105)
-SB_SCORE_ROI = (375, 45, 505, 110)
-SB_RED_MIN = 0.25
+# Top-left scoreboard. Two layout families across 1.CFL broadcasts:
+#   * score as one text token in a dark box  — "JED 0-0 ARS 28:10"
+#     (jed-ars, jez-jed, dec-mla, mor-bud): generic OCR reads it directly.
+#   * score as two digits in separate red boxes — "25:24 PET [0][1] MOR"
+#     (sut-mla, pet-mor): generic OCR misses the white-on-red digits, so the
+#     red boxes are auto-located and re-read with a digit allowlist.
+# Visibility is intermittent on every match, so the scoreboard is sampled on
+# a fixed cadence across the whole video rather than gated by a presence
+# test (a reading either parses or it doesn't).
+SB_RED_MIN_AREA = 500    # px^2 — smallest credible score box component
+SB_RED_MAX_W = 120       # px — largest credible score box width
 
-SWEEP_STEP = 12          # frames between sweep samples (~0.5 s @ 25fps)
+SWEEP_STEP = 12          # frames between banner sweep samples (~0.5 s @ 25fps)
 OCR_PER_RUN = 3          # banner frames OCR'd per contiguous run
-SB_OCR_EVERY_S = 10.0    # seconds between scoreboard OCR samples within a run
+SB_OCR_EVERY_S = 10.0    # seconds between scoreboard OCR samples
 
 
 def _red_fraction(bgr: np.ndarray) -> float:
@@ -80,15 +84,14 @@ def _red_fraction(bgr: np.ndarray) -> float:
 def sweep_graphics(video_path: str, step: int = SWEEP_STEP,
                    start: int = 0, end: Optional[int] = None) -> dict:
     """Sequential pass over the video (grab-only between samples — fast).
-    Returns {"banner": [(frame, red_frac)...], "scoreboard": [...]} for
-    samples where the presence test fired."""
+    Returns {"banner": [(frame, red_frac)...]} for samples where the bottom
+    banner's red bar is present."""
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     end = min(end or total, total)
     bx1, by1, bx2, by2 = BANNER_RED_ROI
-    sx1, sy1, sx2, sy2 = SB_RED_ROI
 
-    banner, sb = [], []
+    banner = []
     f = start
     cap.set(cv2.CAP_PROP_POS_FRAMES, start)
     while f < end:
@@ -102,13 +105,9 @@ def sweep_graphics(video_path: str, step: int = SWEEP_STEP,
             rb = _red_fraction(img[by1:by2, bx1:bx2])
             if rb >= BANNER_RED_MIN:
                 banner.append((f, round(rb, 3)))
-            rs = _red_fraction(img[sy1:sy2, sx1:sx2])
-            if rs >= SB_RED_MIN:
-                sb.append((f, round(rs, 3)))
         f += 1
     cap.release()
-    return {"banner": banner, "scoreboard": sb, "step": step,
-            "start": start, "end": end}
+    return {"banner": banner, "step": step, "start": start, "end": end}
 
 
 def _runs(samples: list, step: int, max_gap_steps: int = 3) -> list:
@@ -150,10 +149,40 @@ def _read_clock(img: np.ndarray) -> Optional[int]:
     return None
 
 
+_SCORE_TOKEN_RE = re.compile(r"^(\d{1,2})\s*[-:|.]\s*(\d{1,2})$")
+
+
+def _locate_red_boxes(img: np.ndarray) -> Optional[tuple]:
+    """Bounding region of the red score boxes inside CLOCK_SEARCH_ROI, or
+    None. Auto-located so the red-box layouts (sut-mla, pet-mor) work
+    wherever the graphic sits."""
+    x1, y1, x2, y2 = Config.CLOCK_SEARCH_ROI
+    roi = img[y1:y2, x1:x2]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    red = (((hsv[:, :, 0] < 12) | (hsv[:, :, 0] > 168))
+           & (hsv[:, :, 1] > 110) & (hsv[:, :, 2] > 60)).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(red, 8)
+    boxes = []
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if area >= SB_RED_MIN_AREA and w <= SB_RED_MAX_W and h >= 20:
+            boxes.append((x, y, w, h))
+    if not boxes:
+        return None
+    bx1 = min(b[0] for b in boxes) - 5
+    by1 = min(b[1] for b in boxes) - 5
+    bx2 = max(b[0] + b[2] for b in boxes) + 5
+    by2 = max(b[1] + b[3] for b in boxes) + 5
+    return (x1 + max(bx1, 0), y1 + max(by1, 0), x1 + bx2, y1 + by2)
+
+
 def _read_score_boxes(img: np.ndarray) -> Optional[tuple]:
-    """(home, away) from the scoreboard's red score boxes, or None. Digit
+    """(home, away) from auto-located red score boxes, or None. Digit
     allowlist + 4x upscale: generic OCR misses the white-on-red digits."""
-    x1, y1, x2, y2 = SB_SCORE_ROI
+    roi = _locate_red_boxes(img)
+    if roi is None:
+        return None
+    x1, y1, x2, y2 = roi
     big = cv2.resize(img[y1:y2, x1:x2], None, fx=4.0, fy=4.0,
                      interpolation=cv2.INTER_CUBIC)
     res = _reader().readtext(big, allowlist="0123456789")
@@ -177,10 +206,38 @@ def _read_score_boxes(img: np.ndarray) -> Optional[tuple]:
 
 
 def _parse_scoreboard_frame(img: np.ndarray) -> Optional[dict]:
-    score = _read_score_boxes(img)
+    """Score + clock from one frame, trying both layout families:
+    (1) score as one OCR token ("0-0", "0 : 1"); (2) score digits in
+    auto-located red boxes. Requires a clock for family (1) — a lone "0-0"
+    string elsewhere on screen must not mint a reading."""
+    tokens = _ocr_tokens(img, Config.CLOCK_SEARCH_ROI)
+    clock_cands, score_cands = [], []
+    for text, _x in tokens:
+        t = text.strip().replace(" ", "")
+        m = _CLOCK_RE.match(t)
+        if m and int(m.group(2)) < 60 and int(m.group(1)) <= 130:
+            clock_cands.append((int(m.group(1)), int(m.group(2))))
+        m2 = _SCORE_TOKEN_RE.match(t)
+        if m2 and int(m2.group(1)) <= 15 and int(m2.group(2)) <= 15:
+            score_cands.append((int(m2.group(1)), int(m2.group(2))))
+    # A colon-separated score ("0 : 1") also matches the clock pattern; the
+    # real clock has the larger minutes figure. Ambiguity in the opening
+    # minutes is tolerated — the majority filter downstream absorbs it.
+    clock = None
+    if clock_cands:
+        mm, ss = max(clock_cands)
+        clock = mm * 60 + ss
+    score = None
+    for h, a in score_cands:
+        if clock is not None and h * 60 + a == clock and len(clock_cands) == 1:
+            continue        # that token WAS the clock, not a score
+        score = (h, a)
+        break
+    if score is None:
+        score = _read_score_boxes(img)
     if score is None:
         return None
-    return {"home": score[0], "away": score[1], "clock_sec": _read_clock(img)}
+    return {"home": score[0], "away": score[1], "clock_sec": clock}
 
 
 def _parse_banner(tokens: list) -> Optional[dict]:
@@ -244,16 +301,22 @@ def read_graphics(video_path: str, sweep: dict, fps: float = 25.0) -> list:
             if parsed:
                 readings.append({"frame": int(f), "source": "banner", **parsed})
 
+    # Scoreboard: fixed cadence across the whole video — visibility is
+    # intermittent and layout-dependent, so presence isn't pre-tested; a
+    # sample either parses into (score, clock) or is discarded.
     sb_every = int(SB_OCR_EVERY_S * fps)
-    for f0, f1 in _runs(sweep["scoreboard"], step):
-        for f in range(f0, f1 + 1, sb_every):
-            img = grab(f)
-            if img is None:
-                continue
-            parsed = _parse_scoreboard_frame(img)
-            if parsed:
-                readings.append({"frame": int(f), "source": "scoreboard",
-                                 **parsed})
+    n_tried = 0
+    for f in range(sweep["start"], sweep["end"], sb_every):
+        img = grab(f)
+        if img is None:
+            continue
+        n_tried += 1
+        parsed = _parse_scoreboard_frame(img)
+        if parsed:
+            readings.append({"frame": int(f), "source": "scoreboard",
+                             **parsed})
+    print(f"  scoreboard OCR: {len([r for r in readings if r['source'] == 'scoreboard'])}"
+          f"/{n_tried} samples parsed")
     cap.release()
     readings.sort(key=lambda r: r["frame"])
     return readings
@@ -353,8 +416,7 @@ def run_oracle(slug: str, home_team: Optional[int] = None,
     else:
         print(f"[{slug}] sweeping graphics (step {SWEEP_STEP})...")
         sweep = sweep_graphics(video)
-        n_b, n_s = len(sweep["banner"]), len(sweep["scoreboard"])
-        print(f"[{slug}] flagged samples - banner: {n_b}, scoreboard: {n_s}")
+        print(f"[{slug}] banner samples flagged: {len(sweep['banner'])}")
         print(f"[{slug}] OCR on flagged frames (CPU)...")
         readings = read_graphics(video, sweep, fps=period_info["fps"])
         Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)

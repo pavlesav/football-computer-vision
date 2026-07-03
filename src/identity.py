@@ -214,17 +214,18 @@ def consolidation_report(meta: pd.DataFrame) -> str:
 
 # ── Identity file ────────────────────────────────────────────────────────────
 
-def identity_path(slug: str) -> Path:
-    return identities_dir() / f"{slug}.json"
+def identity_path(slug: str, period: int = 1) -> Path:
+    """Per-period identity file — track ids restart every pipeline run, so
+    each half needs its own naming. Naming the same player identically in
+    both halves unifies them across the match (exports and the report
+    aggregate by name)."""
+    return identities_dir() / f"{slug}_p{int(period)}.json"
 
 
 def save_identities(slug: str, meta: pd.DataFrame, names: dict,
                     period: int = 1) -> Path:
     """``names``: {meta_id: {"name": str, "number": int|None}}. Persists both
-    the naming and the track->meta mapping so the export can resolve tracks.
-    ``period`` records which half's artifact the track ids belong to — track
-    ids restart every pipeline run, so a p1 mapping must never be applied to
-    p2 tracks."""
+    the naming and the track->meta mapping so the export can resolve tracks."""
     payload = {
         "slug": slug,
         "period": int(period),
@@ -232,21 +233,25 @@ def save_identities(slug: str, meta: pd.DataFrame, names: dict,
                           for r in meta.itertuples(index=False)},
         "players": {str(int(k)): v for k, v in names.items()},
     }
-    p = identity_path(slug)
+    p = identity_path(slug, period)
     p.write_text(json.dumps(payload, indent=2))
     return p
 
 
 def load_identity_map(slug: str, period: int = 1) -> Optional[dict]:
-    """{track_id: {"name":…, "number":…}} for ``period``'s track ids, or None
-    if no identity file exists for that period (files without a period field
-    predate per-half artifacts and are period 1)."""
-    p = identity_path(slug)
+    """{track_id: {"name":…, "number":…}} for ``period``'s track ids, or None.
+    Falls back to the legacy single file ``{slug}.json`` when its period
+    matches (files without a period field predate per-half artifacts)."""
+    p = identity_path(slug, period)
     if not p.exists():
-        return None
-    d = json.loads(p.read_text())
-    if int(d.get("period", 1)) != int(period):
-        return None
+        legacy = identities_dir() / f"{slug}.json"
+        if not legacy.exists():
+            return None
+        d = json.loads(legacy.read_text())
+        if int(d.get("period", 1)) != int(period):
+            return None
+    else:
+        d = json.loads(p.read_text())
     meta_of = {int(k): int(v) for k, v in d["meta_of_track"].items()}
     players = {int(k): v for k, v in d["players"].items()}
     return {tid: players[mid] for tid, mid in meta_of.items()

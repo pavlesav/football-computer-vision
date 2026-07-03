@@ -819,11 +819,20 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
     minute_offset = 45 * (period - 1)   # SB: minute continues across halves
     attack_ltr = {int(k): bool(v)
                   for k, v in (summary.get("attack_ltr") or {}).items()}
-    gk_tracks = {int(k) for k in (summary.get("gk_tracks") or {})}
+    gk_tracks = {int(k): int(v)
+                 for k, v in (summary.get("gk_tracks") or {}).items()}
     idmap = idmap or {}
 
     def ns(tid: int) -> int:
         return int(tid) + PERIOD_TID_OFFSET * (period - 1)
+
+    # Goalkeepers get a period-independent identity: the roles signature is
+    # positionally certain, so team T's GK is the same player in both halves
+    # (barring a GK substitution) — the one cross-half merge we can make
+    # honestly. Outfield cross-half ReID was measured and rejected: the
+    # team-classifier embeddings carry no within-team identity signal
+    # (P(same-player pair closer) = 0.43, i.e. chance).
+    GK_ID_BASE = 900000
 
     def resolve_player(tid: int) -> dict:
         if int(tid) < 0:            # oracle goals have no identified scorer
@@ -836,6 +845,9 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
             if info.get("number") is not None:
                 rec["jersey_number"] = int(info["number"])
             return rec
+        if int(tid) in gk_tracks:
+            team = gk_tracks[int(tid)]
+            return {"id": GK_ID_BASE + team, "name": f"goalkeeper-t{team}"}
         if meta_map is not None:
             mid = int(meta_map.get(int(tid), tid))
             return {"id": ns(mid), "name": f"player-m{mid}{suffix}"}
