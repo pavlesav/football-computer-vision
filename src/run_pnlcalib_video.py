@@ -272,7 +272,10 @@ def check_projection_sanity(P, player_boxes, min_players=5, min_on_pitch_ratio=0
     if len(player_boxes) < min_players:
         return False
 
-    H_img_to_pitch = np.linalg.inv(P[:, [0, 1, 3]])
+    try:
+        H_img_to_pitch = np.linalg.inv(P[:, [0, 1, 3]])
+    except np.linalg.LinAlgError:
+        return False    # degenerate P can't be sane
     on_pitch = 0
     for x1, y1, x2, y2 in player_boxes:
         foot_x = (x1 + x2) / 2
@@ -438,7 +441,8 @@ _REFINE_LINES = [
 ]
 
 
-REFINE_STATS = {"attempts": 0, "applied": 0, "rejected_worse": 0, "too_few": 0}
+REFINE_STATS = {"attempts": 0, "applied": 0, "rejected_worse": 0,
+                "too_few": 0, "degenerate": 0}
 
 
 def _line_alignment_score(P, frame):
@@ -558,6 +562,11 @@ def refine_projection_to_lines(P, frame, search_radius=18, min_inliers=25,
 
     from src.camera_motion import projection_from_plane_homography
     P_refined = projection_from_plane_homography(H_img_to_pitch.astype(np.float64))
+    if P_refined is None:
+        # RANSAC returned a rank-deficient H (near-collinear inliers) —
+        # this exact case crashed jez-ars p2 at 87% (2026-07-04).
+        REFINE_STATS["degenerate"] += 1
+        return P
 
     # Only accept the refinement if projected pitch lines now lie on paint
     # at least as well as they did before. Catches the RANSAC-found-a-

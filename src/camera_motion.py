@@ -44,24 +44,48 @@ PITCH_LENGTH = 105.0
 PITCH_WIDTH = 68.0
 
 
-def _h_from_projection(P: np.ndarray) -> np.ndarray:
+_MAX_COND = 1e12   # beyond this a homography is numerically degenerate
+
+
+def _safe_inv(H: np.ndarray) -> Optional[np.ndarray]:
+    """Invert a 3x3 homography, or None if it is singular/degenerate.
+
+    cv2.findHomography (RANSAC) can return a rank-deficient H when the
+    surviving inliers are nearly collinear; inverting it unguarded killed a
+    batch half at 87% (jez-ars p2, 2026-07-04) after ~500k clean frames.
+    Callers must treat None as "no usable homography this frame".
+    """
+    try:
+        if not np.all(np.isfinite(H)) or np.linalg.cond(H) > _MAX_COND:
+            return None
+        return np.linalg.inv(H)
+    except np.linalg.LinAlgError:
+        return None
+
+
+def _h_from_projection(P: np.ndarray) -> Optional[np.ndarray]:
     """Extract the 3x3 image->pitch plane homography from a 3x4 P matrix.
 
     P operates on origin-centered pitch coordinates (PnLCalib convention),
     so the returned H also maps image pixels to origin-centered pitch
-    coords (x in [-52.5, 52.5], y in [-34, 34]).
+    coords (x in [-52.5, 52.5], y in [-34, 34]). None if P's plane part is
+    degenerate.
     """
     H_pitch_to_img = P[:, [0, 1, 3]]
-    return np.linalg.inv(H_pitch_to_img)
+    return _safe_inv(H_pitch_to_img)
 
 
-def projection_from_plane_homography(H_img_to_pitch: np.ndarray) -> np.ndarray:
+def projection_from_plane_homography(
+        H_img_to_pitch: np.ndarray) -> Optional[np.ndarray]:
     """Pack a 3x3 plane homography into a 3x4 projection matrix with zero z-column.
 
     The resulting P is only correct for z=0 world points. Goal posts
-    (z != 0) won't render; every pitch line renders correctly.
+    (z != 0) won't render; every pitch line renders correctly. None if the
+    homography is degenerate (not invertible).
     """
-    H_pitch_to_img = np.linalg.inv(H_img_to_pitch)
+    H_pitch_to_img = _safe_inv(H_img_to_pitch)
+    if H_pitch_to_img is None:
+        return None
     P = np.zeros((3, 4), dtype=np.float64)
     P[:, 0] = H_pitch_to_img[:, 0]
     P[:, 1] = H_pitch_to_img[:, 1]
@@ -152,6 +176,10 @@ class CameraMotionTracker:
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         H_img_to_pitch = _h_from_projection(P_trusted)
+        if H_img_to_pitch is None:
+            # Degenerate trusted P — don't build a trail on it.
+            self._state = None
+            return P_trusted
         ok = self._detect_and_store(gray, H_img_to_pitch)
         if ok:
             self.seeds += 1
@@ -228,8 +256,13 @@ class CameraMotionTracker:
                 # motion-blurred frames.
                 s.frames_since_seed = 0
 
+        P_out = projection_from_plane_homography(s.H_img_to_pitch)
+        if P_out is None:
+            # Flow RANSAC produced a degenerate homography — trail is junk.
+            self._state = None
+            return None
         self.propagations += 1
-        return projection_from_plane_homography(s.H_img_to_pitch)
+        return P_out
 
     # ── Internal ────────────────────────────────────────────────────────
 
