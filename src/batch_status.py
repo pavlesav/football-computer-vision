@@ -77,6 +77,26 @@ def main() -> None:
         print("\nno active perception in the log tail "
               "(between steps, or batch finished)")
 
+    # Rough whole-queue ETA from measured per-step costs (hours).
+    step_h = {"perception_p1": 4.5, "perception_p2": 4.5,
+              "stabilize_p1": 0.05, "stabilize_p2": 0.05,
+              "jersey_p1": 1.0, "jersey_p2": 1.0,
+              "score_ocr": 0.5, "events": 0.05, "report": 0.05}
+    left = 0.0
+    for slug, home in TIER1_QUEUE:
+        p = Config.OUTPUT_DIR / "match_runs" / f"{slug}_status.json"
+        st = json.loads(p.read_text()) if p.exists() else {}
+        for s in STEPS:
+            if s in st:
+                continue
+            if prog and slug == prog["slug"] and s.startswith("perception"):
+                # currently-running step: scale by remaining fraction
+                left += step_h[s] * (1 - prog["done"] / max(prog["total"], 1))
+            else:
+                left += step_h[s]
+    print(f"queue remaining: ~{left:.0f}h "
+          f"(rough; perception ~4.5h/half, jersey ~1h/half)")
+
 
 if __name__ == "__main__":
     main()
