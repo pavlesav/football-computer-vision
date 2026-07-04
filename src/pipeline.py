@@ -61,6 +61,19 @@ from src.run_pnlcalib_video import (
 )
 from src.run_demo import project_foot, is_wide_shot
 
+def progress(iterable, total: int, desc: str):
+    """tqdm that stays readable when stderr is redirected to a log file. In a
+    real terminal the carriage-return bar overwrites itself, but in a file
+    every update is a fresh line — at ~3 it/s and the default 0.1s interval
+    that is one line per frame (~77k lines/half). When not a TTY, print a
+    plain line only every 1% (mininterval guards against a fast burst
+    spamming), which is what the batch log wants."""
+    if sys.stderr.isatty():
+        return tqdm(iterable, total=total, desc=desc)
+    return tqdm(iterable, total=total, desc=desc, ascii=True,
+                miniters=max(1, total // 100), mininterval=5.0)
+
+
 BALL_CONF_THRESHOLD = 0.08
 TEAM_SAMPLE_EVERY = 15          # frames between ResNet embedding samples per pass
 CHECKPOINT_EVERY = 15000        # frames between partial artifact writes: a
@@ -253,7 +266,7 @@ class PerceptionPipeline:
         ball_cand_rows: list[dict] = []   # every raw ball detection, all frames
         src_counts: dict[str, int] = defaultdict(int)
 
-        for i in tqdm(range(span), desc=f"{self.slug} perception"):
+        for i in progress(range(span), span, f"{self.slug} perception"):
             ok, frame = cap.read()
             if not ok:
                 break
