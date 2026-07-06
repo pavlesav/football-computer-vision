@@ -28,7 +28,7 @@ import argparse
 import base64
 import html
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import cv2
@@ -64,8 +64,8 @@ def load_lineup(slug: str) -> dict | None:
 
 # ── Selection & data collection ──────────────────────────────────────────────
 
-def _event_counts_per_meta(gs, track_meta: dict) -> dict:
-    """{meta_id: n_events} from a fresh detect_events pass (the ranking must
+def _event_counts_per_tid(gs) -> dict:
+    """{track_id: n_events} from a fresh detect_events pass (the ranking must
     reflect who actually appears in the deliverable, not just who is on
     screen a lot)."""
     from .events import detect_events
@@ -79,8 +79,72 @@ def _event_counts_per_meta(gs, track_meta: dict) -> dict:
         for tid in tids:
             if tid is None or int(tid) < 0:
                 continue
-            counts[track_meta.get(int(tid), int(tid))] += 1
+            counts[int(tid)] += 1
     return dict(counts)
+
+
+def _event_counts_per_meta(gs, track_meta: dict) -> dict:
+    counts: dict = defaultdict(int)
+    for tid, n in _event_counts_per_tid(gs).items():
+        counts[track_meta.get(tid, tid)] += n
+    return dict(counts)
+
+
+def _track_reads(slug: str, period: int) -> dict:
+    """{track_id: [read dicts]} from the cached jersey-OCR payload."""
+    from .jersey_ocr import jersey_path
+    p = jersey_path(slug, period)
+    if not p.exists():
+        return {}
+    d = json.loads(p.read_text())
+    return {int(t): v.get("reads", [])
+            for t, v in d.get("track_reads", {}).items()}
+
+
+def select_tracks(gs, slug: str, period: int, top_n: int = 40) -> tuple:
+    """Track-level card selection: top-N raw tracks by event participation,
+    plus tracks with >=3 jersey-OCR reads (their numbers are legible by
+    construction). Single tracks sidestep the consolidation merges that made
+    grouped cards mix players — measured on dec-mla/jed-ars: every mixed
+    card was a multi-member merged meta (9..126 tracks)."""
+    row_counts = gs.players.groupby("track_id").size()
+    team_mode = gs.players.groupby("track_id")["team_id"].agg(
+        lambda s: s.mode().iat[0])
+    ev = _event_counts_per_tid(gs)
+    reads = _track_reads(slug, period)
+    gk_tids = {int(t) for t in identify_goalkeepers(
+        gs, infer_attack_direction(gs))}
+
+    ranked = sorted(ev, key=lambda t: (-ev[t], -row_counts.get(t, 0)))
+    selected = ranked[:top_n]
+    # A bounded bonus of OCR-read tracks (legible numbers, near-free to
+    # label) — unbounded this ballooned to 180+ cards.
+    extra = sorted((t for t, rs in reads.items()
+                    if len(rs) >= 3 and t not in selected
+                    and t in row_counts.index),
+                   key=lambda t: -len(reads[t]))[:15]
+    selected = selected + extra
+
+    pos = (gs.players[np.isfinite(gs.players.pitch_x)]
+           .groupby("track_id")[["pitch_x", "pitch_y"]].mean())
+    info = {}
+    for tid in selected:
+        nums = [r["number"] for r in reads.get(tid, [])]
+        ocr = Counter(nums).most_common(1)[0] if nums else None
+        t = team_mode.get(tid)
+        info[tid] = {
+            "team": int(t) if t in (0, 1) else None,
+            "events": ev.get(tid, 0),
+            "frames": int(row_counts.get(tid, 0)),
+            "members": [int(tid)],
+            "ocr": int(ocr[0]) if ocr else None,
+            "ocr_votes": int(ocr[1]) if ocr else None,
+            "is_gk": int(tid) in gk_tids,
+            "pos": ((float(pos.loc[tid, "pitch_x"]),
+                     float(pos.loc[tid, "pitch_y"]))
+                    if tid in pos.index else None),
+        }
+    return selected, info
 
 
 def select_metas(gs, jersey: dict, top_n: int = TOP_N) -> tuple:
@@ -251,8 +315,10 @@ h1{font-size:18px;margin:0} .sub{color:#9ab;font-size:13px}
 .t0{background:#5a4d00;color:#ffe14d}.t1{background:#0d3a66;color:#7fc4ff}
 .tn{background:#444;color:#ccc}.gk{background:#5e2a75;color:#eab6ff}
 .stats{color:#9ab}
-.crops{display:flex;gap:6px;overflow-x:auto;margin-bottom:10px}
+.crops-wrap{display:flex;gap:8px;align-items:flex-start;margin-bottom:10px}
+.crops{display:flex;gap:6px;overflow-x:auto;flex:1}
 .crops img{height:170px;border-radius:6px}
+.mini{flex:0 0 150px;border-radius:6px}
 .inputs{display:flex;gap:10px;align-items:center}
 .inputs label{font-size:13px;color:#9ab}
 input[type=text]{background:#12151a;color:#fff;border:1px solid #3a4656;
@@ -278,7 +344,8 @@ body.has-lineup .grid{margin-right:300px}
 """
 
 _JS = """
-const KEY = 'review_' + document.body.dataset.slug + '_p' + document.body.dataset.period;
+const KEY = 'review_' + document.body.dataset.slug + '_p' + document.body.dataset.period
+          + (document.body.dataset.mode === 'tracks' ? '_t' : '');
 // LINEUP: {teamId: {number: playerName}} — injected at build time (may be {})
 function stateLoad(){ try{return JSON.parse(localStorage.getItem(KEY))||{}}catch(e){return{}} }
 function stateSave(s){ localStorage.setItem(KEY, JSON.stringify(s)); }
@@ -369,6 +436,7 @@ function exportJson(){
   });
   const payload = {slug: document.body.dataset.slug,
                    period: parseInt(document.body.dataset.period),
+                   mode: document.body.dataset.mode || 'metas',
                    entries: entries};
   const blob = new Blob([JSON.stringify(payload, null, 2)],
                         {type:'application/json'});
@@ -379,6 +447,24 @@ function exportJson(){
 }
 window.addEventListener('load', refresh);
 """
+
+
+def _minimap(pos) -> str:
+    """Tiny inline-SVG pitch with the track's average position — lets a
+    reviewer who knows the league identify number-less players by role."""
+    if not pos:
+        return ""
+    x, y = pos
+    s = 'fill="none" stroke="#7a92aa" stroke-width="0.7"'
+    return (
+        '<svg class="mini" viewBox="-2 -2 109 72">'
+        f'<rect x="0" y="0" width="105" height="68" fill="#1e3d28" '
+        'stroke="#7a92aa" stroke-width="0.7"/>'
+        f'<line x1="52.5" y1="0" x2="52.5" y2="68" {s}/>'
+        f'<circle cx="52.5" cy="34" r="9.15" {s}/>'
+        f'<rect x="0" y="13.84" width="16.5" height="40.32" {s}/>'
+        f'<rect x="88.5" y="13.84" width="16.5" height="40.32" {s}/>'
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="#ffd75e"/></svg>')
 
 
 def _lineup_assets(lineup: dict | None) -> tuple:
@@ -418,14 +504,21 @@ def _lineup_assets(lineup: dict | None) -> tuple:
     return panel, js, club_of
 
 
-def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
+def build_page(slug: str, period: int, top_n: int = TOP_N,
+               mode: str = "tracks") -> Path:
     gs = GameState.load(slug, period=period)
-    jersey = load_jersey_numbers(slug, period) or {}
     lineup = load_lineup(slug)
-    print(f"[{slug} p{period}] ranking metas by event participation...")
-    selected, info = select_metas(gs, jersey, top_n)
-    print(f"[{slug} p{period}] collecting crops for {len(selected)} metas...")
-    crops = collect_crops(gs, selected, info)
+    print(f"[{slug} p{period}] ranking {mode} by event participation...")
+    if mode == "tracks":
+        selected, info = select_tracks(gs, slug, period, top_n=max(top_n, 40))
+        prefer = {tid: {int(r["frame"]) for r in rs}
+                  for tid, rs in _track_reads(slug, period).items()}
+    else:
+        jersey = load_jersey_numbers(slug, period) or {}
+        selected, info = select_metas(gs, jersey, top_n)
+        prefer = _meta_read_frames(gs, slug, period)
+    print(f"[{slug} p{period}] collecting crops for {len(selected)} cards...")
+    crops = collect_crops(gs, selected, info, prefer=prefer)
     panel, lineup_js, club_of = _lineup_assets(lineup)
 
     cards = []
@@ -443,12 +536,13 @@ def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
                f'({i["ocr_votes"]} votes)</span>' if i["ocr"] else "")
         imgs = "".join(f'<img src="data:image/jpeg;base64,{b}">'
                        for b in crops[mid])
+        tag = ("t" if mode == "tracks" else "m") + str(mid)
         cards.append(f"""
 <div class="card" data-mid="{mid}" data-team="{team if team in (0, 1) else ''}">
   <div class="meta-head">{chip}
-    <span class="stats">m{mid} &middot; {i['events']} events &middot;
+    <span class="stats">{tag} &middot; {i['events']} events &middot;
       {i['frames']} frames</span> {ocr}</div>
-  <div class="crops">{imgs}</div>
+  <div class="crops-wrap"><div class="crops">{imgs}</div>{_minimap(i.get('pos'))}</div>
   <div class="inputs">
     <label>#</label><input type="text" class="num" inputmode="numeric"
       placeholder="{i['ocr'] or ''}">
@@ -464,13 +558,15 @@ def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
 <title>{html.escape(slug)} p{period} — player review</title>
 <style>{_CSS}</style></head>
 <body data-slug="{html.escape(slug)}" data-period="{period}"
-      class="{'has-lineup' if panel else ''}">
+      data-mode="{mode}" class="{'has-lineup' if panel else ''}">
 <header>
   <div><h1>{html.escape(slug)} — half {period}</h1>
-  <div class="sub">Type the shirt number you see (the name fills itself from
-  the lineup), or click a card then click the player on the right. If a card
-  shows two different people, tick "2+ players mixed" instead. Everything
-  auto-saves. When done: Export, then run
+  <div class="sub">Each card is ONE tracked fragment — the same player will
+  appear on several cards; give them the same number each time (they merge
+  automatically). Type the number (name fills itself), or click a card then
+  the player on the right. The mini-pitch shows the fragment's average
+  position. Two different people on one card: tick "2+ players mixed".
+  Can't tell who it is: leave it blank. Auto-saves. When done: Export, then
   <code>py -m src.review_ui --apply &lt;downloaded file&gt;</code></div></div>
   <div id="progress"></div>
   <button id="exportBtn" onclick="exportJson()">Export JSON</button>
@@ -508,14 +604,21 @@ def apply_review(json_path: str) -> Path:
 
     gs = GameState.load(slug, period=period)
     row_counts = gs.players.groupby("track_id").size()
-    meta_of = identity_mod.meta_map(gs)
-    meta_of_track = {int(t): int(meta_of.get(int(t), int(t)))
-                     for t in row_counts.index}
+    if d.get("mode") == "tracks":
+        # Track-level review: identities attach to raw tracks directly —
+        # consolidation (the measured source of mixed-player groups) never
+        # touches identity. Fragments of one player unify through the
+        # shared number+team id in the export, not through grouping.
+        meta_of_track = {int(t): int(t) for t in row_counts.index}
+    else:
+        meta_of = identity_mod.meta_map(gs)
+        meta_of_track = {int(t): int(meta_of.get(int(t), int(t)))
+                         for t in row_counts.index}
 
     payload = {
         "slug": slug,
         "period": period,
-        "source": "review_ui",
+        "source": f"review_ui/{d.get('mode', 'metas')}",
         "meta_of_track": {str(t): m for t, m in meta_of_track.items()},
         "players": {str(mid): {"name": v.get("name"),
                                "number": v.get("number"),
@@ -538,6 +641,9 @@ def main():
     ap.add_argument("--match")
     ap.add_argument("--half", type=int, choices=[1, 2])
     ap.add_argument("--top_n", type=int, default=TOP_N)
+    ap.add_argument("--metas", action="store_true",
+                    help="legacy grouped (meta-track) cards; default is one "
+                         "card per raw track")
     ap.add_argument("--apply", default=None,
                     help="exported review JSON to fold into data/identities/")
     args = ap.parse_args()
@@ -546,7 +652,8 @@ def main():
         return
     if not args.match or not args.half:
         raise SystemExit("--match and --half required (or --apply FILE)")
-    build_page(args.match, args.half, top_n=args.top_n)
+    build_page(args.match, args.half, top_n=args.top_n,
+               mode="metas" if args.metas else "tracks")
 
 
 if __name__ == "__main__":
