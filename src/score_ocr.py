@@ -345,7 +345,14 @@ def _majority_filter(readings: list) -> list:
 def derive_goals(readings: list, period_info: dict) -> dict:
     """Walk the reading timeline; each monotonic score step is a goal.
     Non-monotonic readings (OCR noise that survived filtering) are dropped
-    with a warning rather than minting phantom goals."""
+    with a warning rather than minting phantom goals.
+
+    PERSISTENCE CHECK: a step only counts if the new score sticks. dec-mla's
+    graphic showed 3-3 for ~80s then reverted to 3-2 for the rest of the
+    broadcast (disallowed goal or operator error, corrected on air; real
+    result 3-2) — under a pure monotonic walk the revert readings look like
+    'noise' and the phantom goal survives. A step whose OLD score outnumbers
+    the NEW one in subsequent readings is recorded as reverted, not a goal."""
     fps = float(period_info["fps"])
     fh, sh = (period_info["first_half_start_frame"],
               period_info["second_half_start_frame"])
@@ -355,10 +362,20 @@ def derive_goals(readings: list, period_info: dict) -> dict:
             return 2, (frame - sh) / fps
         return 1, max(frame - fh, 0) / fps
 
-    goals, dropped = [], []
+    def persists(i: int, new: tuple, old: tuple) -> bool:
+        n_new = n_old = 0
+        for r2 in readings[i + 1:]:
+            s = (int(r2["home"]), int(r2["away"]))
+            if s == new:
+                n_new += 1
+            elif s == old:
+                n_old += 1
+        return n_new >= n_old
+
+    goals, dropped, reverted = [], [], []
     cur = (0, 0)
     last_frame = 0
-    for r in readings:
+    for i, r in enumerate(readings):
         score = (int(r["home"]), int(r["away"]))
         if score == cur:
             last_frame = r["frame"]
@@ -366,6 +383,11 @@ def derive_goals(readings: list, period_info: dict) -> dict:
         dh, da = score[0] - cur[0], score[1] - cur[1]
         if dh < 0 or da < 0 or dh + da != 1:
             dropped.append(r)
+            continue
+        if not persists(i, score, cur):
+            reverted.append({"frame": int(r["frame"]),
+                             "transient_score": {"home": score[0],
+                                                 "away": score[1]}})
             continue
         # Anchor choice (pixel-verified on the sut-mla goal): when the
         # scoreboard is visible through the goal the bracket is seconds wide
@@ -391,7 +413,7 @@ def derive_goals(readings: list, period_info: dict) -> dict:
         cur = score
         last_frame = r["frame"]
     return {"goals": goals, "final_score": {"home": cur[0], "away": cur[1]},
-            "dropped_readings": dropped}
+            "dropped_readings": dropped, "reverted_steps": reverted}
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────

@@ -52,6 +52,16 @@ def review_dir() -> Path:
     return d
 
 
+def load_lineup(slug: str) -> dict | None:
+    """data/lineups/{slug}.json — SofaScore lineup (names + shirt numbers +
+    which classifier team is which club), extracted from Polutka_Lab's
+    scraped data. Optional: pages render without it."""
+    p = Config.PROJECT_ROOT / "data" / "lineups" / f"{slug}.json"
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
 # ── Selection & data collection ──────────────────────────────────────────────
 
 def _event_counts_per_meta(gs, track_meta: dict) -> dict:
@@ -195,38 +205,90 @@ input[type=text]{background:#12151a;color:#fff;border:1px solid #3a4656;
 .num{width:64px;text-align:center;font-weight:700}
 .name{flex:1}
 .ocr-hint{font-size:12px;color:#7fa;white-space:nowrap}
+.mixed{margin-left:auto;font-size:12px;color:#e6a23c;white-space:nowrap;
+       display:flex;align-items:center;gap:5px;cursor:pointer}
+.card.flagged{border-color:#e6a23c}
+body.has-lineup .grid{margin-right:300px}
+#lineup{position:fixed;top:78px;right:0;bottom:0;width:290px;overflow-y:auto;
+        background:#181c22;border-left:2px solid #2e3745;padding:10px 12px;
+        font-size:13px}
+#lineup h3{font-size:14px;margin:10px 0 6px;display:flex;gap:8px;align-items:center}
+.lp-row{padding:4px 8px;border-radius:6px;cursor:pointer;display:flex;gap:8px}
+.lp-row:hover{background:#26303d}
+.lp-row.used{opacity:0.35;text-decoration:line-through}
+.lp-num{width:26px;text-align:right;font-weight:700;color:#ffd75e}
+.lp-sub{opacity:0.6}
+.lp-pos{margin-left:auto;color:#68809a}
+.lp-hint{color:#68809a;font-size:12px;margin-bottom:4px}
 """
 
 _JS = """
 const KEY = 'review_' + document.body.dataset.slug + '_p' + document.body.dataset.period;
+// LINEUP: {teamId: {number: playerName}} — injected at build time (may be {})
 function stateLoad(){ try{return JSON.parse(localStorage.getItem(KEY))||{}}catch(e){return{}} }
 function stateSave(s){ localStorage.setItem(KEY, JSON.stringify(s)); }
+let lastCard = null;
 function refresh(){
-  const s = stateLoad(); let done = 0;
+  const s = stateLoad(); let done = 0; const used = {};
   document.querySelectorAll('.card').forEach(c => {
     const mid = c.dataset.mid, e = s[mid]||{};
     c.querySelector('.num').value = e.number||'';
     c.querySelector('.name').value = e.name||'';
-    const filled = (e.number||'').trim() || (e.name||'').trim();
-    c.classList.toggle('done', !!filled); if(filled) done++;
+    const mix = c.querySelector('.mix'); if(mix) mix.checked = !!e.mixed;
+    const filled = (e.number||'').trim() || (e.name||'').trim() || e.mixed;
+    c.classList.toggle('done', !!filled && !e.mixed);
+    c.classList.toggle('flagged', !!e.mixed);
+    if(filled) done++;
+    if((e.number||'').trim()) used[c.dataset.team + '_' + e.number.trim()] = 1;
+  });
+  document.querySelectorAll('.lp-row').forEach(r => {
+    r.classList.toggle('used', !!used[r.dataset.team + '_' + r.dataset.num]);
   });
   document.getElementById('progress').textContent =
     done + ' / ' + document.querySelectorAll('.card').length + ' filled';
 }
-document.addEventListener('input', ev => {
-  const c = ev.target.closest('.card'); if(!c) return;
+function save(c){
   const s = stateLoad();
   s[c.dataset.mid] = {number: c.querySelector('.num').value.trim(),
-                      name: c.querySelector('.name').value.trim()};
+                      name: c.querySelector('.name').value.trim(),
+                      mixed: c.querySelector('.mix') ?
+                             c.querySelector('.mix').checked : false};
   stateSave(s); refresh();
+}
+document.addEventListener('input', ev => {
+  const c = ev.target.closest('.card'); if(!c) return;
+  // typing a number auto-fills the name from the lineup (if name empty)
+  if(ev.target.classList.contains('num')){
+    const team = c.dataset.team, n = ev.target.value.trim();
+    const nameEl = c.querySelector('.name');
+    if(LINEUP[team] && LINEUP[team][n] && !nameEl.value.trim())
+      nameEl.value = LINEUP[team][n];
+  }
+  save(c);
+});
+document.addEventListener('focusin', ev => {
+  const c = ev.target.closest('.card'); if(c) lastCard = c;
+});
+document.addEventListener('click', ev => {
+  const r = ev.target.closest('.lp-row');
+  if(r){
+    if(!lastCard){ alert('Click a player card first, then the lineup name.'); return; }
+    lastCard.querySelector('.num').value = r.dataset.num;
+    lastCard.querySelector('.name').value = r.dataset.name;
+    save(lastCard);
+    return;
+  }
+  const c = ev.target.closest('.card'); if(c) lastCard = c;
 });
 function exportJson(){
   const s = stateLoad(), entries = {};
   document.querySelectorAll('.card').forEach(c => {
     const e = s[c.dataset.mid]||{};
-    if((e.number||'').trim() || (e.name||'').trim())
-      entries[c.dataset.mid] = {number: e.number.trim()? parseInt(e.number):null,
-                                name: e.name.trim()||null};
+    const has = (e.number||'').trim() || (e.name||'').trim() || e.mixed;
+    if(has)
+      entries[c.dataset.mid] = {number: (e.number||'').trim()? parseInt(e.number):null,
+                                name: (e.name||'').trim()||null,
+                                mixed: !!e.mixed};
   });
   const payload = {slug: document.body.dataset.slug,
                    period: parseInt(document.body.dataset.period),
@@ -242,13 +304,53 @@ window.addEventListener('load', refresh);
 """
 
 
+def _lineup_assets(lineup: dict | None) -> tuple:
+    """(panel_html, lineup_js, {team_id: club_short_name})."""
+    if not lineup:
+        return "", "const LINEUP = {};", {}
+    club_of = {}
+    by_team: dict = {}
+    sections = []
+    for side in ("home", "away"):
+        s = lineup[side]
+        tid = int(s["classifier_team"])
+        short = s["name"].replace("FK ", "").replace("OFK ", "")
+        club_of[tid] = short
+        by_team[str(tid)] = {str(p["number"]): p["name"]
+                             for p in s["players"] if p.get("number")}
+        rows = []
+        players = sorted(s["players"],
+                         key=lambda p: (p["substitute"], p["number"] or 99))
+        for p in players:
+            if not p.get("number"):
+                continue
+            cls = "lp-row lp-sub" if p["substitute"] else "lp-row"
+            rows.append(
+                f'<div class="{cls}" data-team="{tid}" data-num="{p["number"]}"'
+                f' data-name="{html.escape(p["name"])}">'
+                f'<span class="lp-num">{p["number"]}</span>'
+                f'<span>{html.escape(p["name"])}</span>'
+                f'<span class="lp-pos">{p.get("position") or ""}</span></div>')
+        sections.append(
+            f'<h3><span class="chip t{tid}">team {tid}</span> '
+            f'{html.escape(short)} ({side})</h3>' + "".join(rows))
+    panel = ('<aside id="lineup"><div class="lp-hint">SofaScore lineup — '
+             'click a card, then click the player to fill it. Subs are '
+             'dimmed; already-used numbers get struck through.</div>'
+             + "".join(sections) + "</aside>")
+    js = "const LINEUP = " + json.dumps(by_team, ensure_ascii=False) + ";"
+    return panel, js, club_of
+
+
 def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
     gs = GameState.load(slug, period=period)
     jersey = load_jersey_numbers(slug, period) or {}
+    lineup = load_lineup(slug)
     print(f"[{slug} p{period}] ranking metas by event participation...")
     selected, info = select_metas(gs, jersey, top_n)
     print(f"[{slug} p{period}] collecting crops for {len(selected)} metas...")
     crops = collect_crops(gs, selected, info)
+    panel, lineup_js, club_of = _lineup_assets(lineup)
 
     cards = []
     for mid in selected:
@@ -256,7 +358,8 @@ def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
         if not crops.get(mid):
             continue
         team = i["team"]
-        chip = (f'<span class="chip t{team}">team {team}</span>'
+        club = club_of.get(team)
+        chip = (f'<span class="chip t{team}">{html.escape(club) if club else f"team {team}"}</span>'
                 if team in (0, 1) else '<span class="chip tn">team ?</span>')
         if i["is_gk"]:
             chip += ' <span class="chip gk">GK</span>'
@@ -265,7 +368,7 @@ def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
         imgs = "".join(f'<img src="data:image/jpeg;base64,{b}">'
                        for b in crops[mid])
         cards.append(f"""
-<div class="card" data-mid="{mid}">
+<div class="card" data-mid="{mid}" data-team="{team if team in (0, 1) else ''}">
   <div class="meta-head">{chip}
     <span class="stats">m{mid} &middot; {i['events']} events &middot;
       {i['frames']} frames</span> {ocr}</div>
@@ -275,6 +378,8 @@ def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
       placeholder="{i['ocr'] or ''}">
     <label>name</label><input type="text" class="name"
       placeholder="optional">
+    <label class="mixed"><input type="checkbox" class="mix">
+      2+ players mixed</label>
   </div>
 </div>""")
 
@@ -282,18 +387,22 @@ def build_page(slug: str, period: int, top_n: int = TOP_N) -> Path:
 <html><head><meta charset="utf-8">
 <title>{html.escape(slug)} p{period} — player review</title>
 <style>{_CSS}</style></head>
-<body data-slug="{html.escape(slug)}" data-period="{period}">
+<body data-slug="{html.escape(slug)}" data-period="{period}"
+      class="{'has-lineup' if panel else ''}">
 <header>
   <div><h1>{html.escape(slug)} — half {period}</h1>
-  <div class="sub">Type the shirt number you see (name optional, from the
-  public lineup). Filled cards turn green; inputs auto-save in the browser.
-  When done: Export, then run
-  <code>python -m src.review_ui --apply &lt;downloaded file&gt;</code></div></div>
+  <div class="sub">Type the shirt number you see (the name fills itself from
+  the lineup), or click a card then click the player on the right. If a card
+  shows two different people, tick "2+ players mixed" instead. Everything
+  auto-saves. When done: Export, then run
+  <code>py -m src.review_ui --apply &lt;downloaded file&gt;</code></div></div>
   <div id="progress"></div>
   <button id="exportBtn" onclick="exportJson()">Export JSON</button>
 </header>
 <div class="grid">{''.join(cards)}</div>
-<script>{_JS}</script>
+{panel}
+<script>{lineup_js}
+{_JS}</script>
 </body></html>"""
 
     out = review_dir() / f"{slug}_p{period}_review.html"
@@ -312,7 +421,13 @@ def apply_review(json_path: str) -> Path:
     d = json.loads(Path(json_path).read_text(encoding="utf-8"))
     slug, period = d["slug"], int(d["period"])
     entries = {int(k): v for k, v in d["entries"].items()}
-    if not entries:
+    # Metas flagged "2+ players mixed" must NOT get an identity — naming a
+    # merged meta assigns one player's events to another. They're kept
+    # separately as split candidates for the ID-swap adjudication tool.
+    mixed = sorted(mid for mid, v in entries.items() if v.get("mixed"))
+    clean = {mid: v for mid, v in entries.items()
+             if not v.get("mixed") and (v.get("number") or v.get("name"))}
+    if not clean and not mixed:
         raise SystemExit("review file has no filled entries")
 
     gs = GameState.load(slug, period=period)
@@ -328,11 +443,14 @@ def apply_review(json_path: str) -> Path:
         "meta_of_track": {str(t): m for t, m in meta_of_track.items()},
         "players": {str(mid): {"name": v.get("name"),
                                "number": v.get("number")}
-                    for mid, v in entries.items()},
+                    for mid, v in clean.items()},
+        "mixed_metas": mixed,
     }
     out = identity_mod.identity_path(slug, period)
-    out.write_text(json.dumps(payload, indent=2))
-    print(f"applied {len(entries)} entries -> {out}")
+    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
+                   encoding="utf-8")
+    print(f"applied {len(clean)} identities "
+          f"(+{len(mixed)} mixed metas recorded) -> {out}")
     print("rebuild the deliverables with: python -m src.run_match "
           f"--match {slug} --home_team <0|1>")
     return out
