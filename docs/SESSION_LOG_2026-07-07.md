@@ -34,6 +34,18 @@ toward a business. Worked unattended.
    (grounded plan). All 6 labeled matches rebuilt with clean names +
    propagation.
 
+6. **Shot-candidate detection explored** (`src/shot_candidates.py`) — measured
+   two signals vs SofaScore shot times (clock-aligned, verified via the goal
+   anchor: oracle p2 10:45 ≈ SofaScore 10:40):
+   - Ball-toward-goal: **recall 13-22%** — shots happen on close-ups where
+     the ball isn't tracked (the goal itself gave zero ball candidates).
+   - **Camera wide→close-up transition: recall ~83%** (9/9, 13/18, 25/30) —
+     the director zooms on every shot. But ~500 transitions/match (≈2%
+     precision); final-third ball filter halves recall.
+   - **Finding**: camera-cut is the right high-recall foundation; needs a
+     ball-independent precision filter (player-box-occupancy before the cut +
+     restart type after). Not shipped; documented for next iteration.
+
 ## The through-line
 
 Every measurement points the same way: **team/zone-level analytics are close to
@@ -49,9 +61,9 @@ track re-ID (player tier).
 2. **PnLCalib night fine-tune** — biggest quality lever; ~half of fixtures are
    floodlit and collapse to ~17% coverage.
 3. **Re-ID tracker** — the only path to production player-level stats.
-4. **Shot candidate detector** — designed but not built; ball-toward-goal +
-   dead-ball → candidate clips for human tag; validate recall against
-   SofaScore `match_shots.timeSeconds` (needs continuous→per-half clock map).
+4. **Shot detector v2** — build the camera-cut (83% recall) + player-box-
+   occupancy precision filter; the ball-signal and clock-mapping already exist
+   in `src/shot_candidates.py`.
 5. **One-command pipeline + flagship opposition report** for a customer convo.
 
 ## Commits this session
