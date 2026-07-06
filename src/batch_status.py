@@ -19,7 +19,10 @@ from .run_batch import TIER1_QUEUE
 STEPS = ["perception_p1", "stabilize_p1", "jersey_p1",
          "perception_p2", "stabilize_p2", "jersey_p2",
          "score_ocr", "events", "report"]
-LOG = Config.OUTPUT_DIR / "match_runs" / "batch_tier1.err"
+def _newest_log() -> Path | None:
+    logs = sorted((Config.OUTPUT_DIR / "match_runs").glob("batch_tier1*.err"),
+                  key=lambda p: p.stat().st_mtime)
+    return logs[-1] if logs else None
 # last "<slug> perception:  64%|... | 47898/75275 [3:12:04<5:22:52, 1.41it/s]"
 _PROG = re.compile(
     r"([\w-]+) perception:\s*(\d+)%\|[^|]*\|\s*(\d+)/(\d+)\s*"
@@ -34,10 +37,11 @@ def _tail(path: Path, nbytes: int = 8192) -> str:
 
 
 def _last_progress() -> dict | None:
-    if not LOG.exists():
+    log = _newest_log()
+    if log is None:
         return None
     m = None
-    for m in _PROG.finditer(_tail(LOG)):
+    for m in _PROG.finditer(_tail(log)):
         pass                     # keep the last match in the tail window
     if not m:
         return None

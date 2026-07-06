@@ -66,7 +66,8 @@ def _run(slug: str, step: str, args: list) -> None:
     _mark(slug, step)
 
 
-def _artifact_complete(slug: str, period: int) -> bool:
+def _artifact_complete(slug: str, period: int,
+                       expected_frames: int | None = None) -> bool:
     meta_p = game_state_dir(slug, period) / "meta.json"
     if not meta_p.exists():
         return False
@@ -74,7 +75,15 @@ def _artifact_complete(slug: str, period: int) -> bool:
     if meta.get("partial"):
         return False
     span = meta.get("end_frame", 0) - meta.get("start_frame", 0)
-    return meta.get("n_frames", 0) >= 0.95 * span
+    if meta.get("n_frames", 0) < 0.95 * span:
+        return False
+    if expected_frames is not None and span < 0.95 * expected_frames:
+        # Artifact is internally complete but covers only a slice of the
+        # half — an old 4-min test artifact made the batch skip dec-mla p1
+        # entirely (2026-07-05). Completeness must be judged against the
+        # half's expected length, not the artifact's own span.
+        return False
+    return True
 
 
 def process_match(slug: str, home_team: int, pnl_stride: int = 3,
@@ -88,8 +97,11 @@ def process_match(slug: str, home_team: int, pnl_stride: int = 3,
 
     for period in (1, 2):
         step = f"perception_p{period}"
-        if skip_perception or _artifact_complete(slug, period):
+        expected_frames = int(spans[period] * fps)
+        if skip_perception or _artifact_complete(slug, period, expected_frames):
             print(f"[{slug}] {step}: artifact complete - skip", flush=True)
+            if not status.get(step):
+                _mark(slug, step)   # keep the status file honest
         else:
             _run(slug, step, ["src.pipeline", "--match", slug,
                               "--half", str(period), "--offset_min", "0",
