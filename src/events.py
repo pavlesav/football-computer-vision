@@ -853,9 +853,11 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
             mid = int(meta_map.get(int(tid), tid)) if meta_map else int(tid)
             # A human-confirmed number gets the same period-independent id
             # scheme as OCR'd numbers, so review-confirmed players unify
-            # across halves by id (not just by display name).
-            team = None
-            if number is not None:
+            # across halves by id (not just by display name). The human's
+            # team (from a lineup click in the review UI) beats the meta's
+            # classifier team — night matches mislabel whole tracks.
+            team = info.get("team")
+            if number is not None and team is None:
                 jrec = (jersey_numbers or {}).get(mid)
                 team = (jrec or {}).get("team")
                 if team is None and meta_team is not None:

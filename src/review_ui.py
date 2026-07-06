@@ -41,7 +41,7 @@ from .jersey_ocr import load_jersey_numbers
 from .roles import infer_attack_direction, identify_goalkeepers
 
 TOP_N = 28              # event-ranked metas shown (plus all jersey-confident)
-CROPS_PER_META = 4
+CROPS_PER_META = 6
 CROP_MAX_H = 190        # px, embedded image height
 JPEG_QUALITY = 82
 
@@ -125,28 +125,76 @@ def select_metas(gs, jersey: dict, top_n: int = TOP_N) -> tuple:
     return selected, info
 
 
-def _best_crop_rows(gs, member_tids: list, k: int = CROPS_PER_META):
+def _best_crop_rows(gs, member_tids: list, k: int = CROPS_PER_META,
+                    prefer_frames: set | None = None):
+    """Crop selection tuned for the two things the reviewer needs to judge:
+    WHICH number (frames where jersey OCR got a read show the back of the
+    shirt — take up to 2 first) and WHETHER the meta is one player (spread
+    the rest across the meta's whole timeline, so a mid-track ID swap is
+    visible instead of hidden behind four near-identical big crops)."""
     pl = gs.players[gs.players.track_id.isin(member_tids)].copy()
     if pl.empty:
         return []
     pl["h"] = pl.y2 - pl.y1
-    pl = pl.sort_values("h", ascending=False)
-    picks, seen_frames = [], []
-    for r in pl.itertuples(index=False):
-        if any(abs(int(r.frame) - f) < 40 for f in seen_frames):
-            continue
+    picks, seen = [], []
+
+    def try_add(r) -> bool:
+        f = int(r.frame)
+        if any(abs(f - s) < 40 for s in seen):
+            return False
         picks.append(r)
-        seen_frames.append(int(r.frame))
+        seen.append(f)
+        return True
+
+    if prefer_frames:
+        pf = (pl[pl.frame.isin(prefer_frames)]
+              .sort_values("h", ascending=False))
+        for r in pf.itertuples(index=False):
+            if sum(1 for _ in picks) >= 2:
+                break
+            try_add(r)
+    big = pl.sort_values("h", ascending=False).head(60).sort_values("frame")
+    if len(big):
+        for i in np.linspace(0, len(big) - 1,
+                             num=max(2 * (k - len(picks)), 1), dtype=int):
+            if len(picks) >= k:
+                break
+            try_add(big.iloc[i])
+    for r in pl.sort_values("h", ascending=False).itertuples(index=False):
         if len(picks) >= k:
             break
+        try_add(r)
+    picks.sort(key=lambda r: int(r.frame))
     return picks
 
 
-def collect_crops(gs, selected: list, info: dict) -> dict:
-    """{meta_id: [jpeg-base64, ...]} — decoded in frame order (one pass)."""
+def _meta_read_frames(gs, slug: str, period: int) -> dict:
+    """{meta_id: {frames with an accepted jersey-OCR read}} — those frames
+    show a legible shirt number by construction."""
+    from .jersey_ocr import jersey_path
+    p = jersey_path(slug, period)
+    if not p.exists():
+        return {}
+    d = json.loads(p.read_text())
+    out: dict = defaultdict(set)
+    for tid, v in d.get("track_reads", {}).items():
+        for r in v.get("reads", []):
+            out[int(v["meta_id"])].add(int(r["frame"]))
+    return out
+
+
+def collect_crops(gs, selected: list, info: dict,
+                  prefer: dict | None = None) -> dict:
+    """{meta_id: [jpeg-base64, ...]} — decoded in frame order (one pass).
+    Each crop gets a mm:ss timestamp so temporally distant crops (where ID
+    swaps hide) are recognizable."""
+    time_map = dict(zip(gs.frames.frame.astype(int),
+                        gs.frames.time_sec.astype(float)))
     jobs = []
     for mid in selected:
-        for r in _best_crop_rows(gs, info[mid]["members"]):
+        rows = _best_crop_rows(gs, info[mid]["members"],
+                               prefer_frames=(prefer or {}).get(mid))
+        for r in rows:
             jobs.append((int(r.frame), mid, int(r.x1), int(r.y1),
                          int(r.x2), int(r.y2)))
     jobs.sort()
@@ -166,6 +214,13 @@ def collect_crops(gs, selected: list, info: dict) -> dict:
         ch, cw = crop.shape[:2]
         if ch > CROP_MAX_H:
             crop = cv2.resize(crop, (int(cw * CROP_MAX_H / ch), CROP_MAX_H))
+        t = time_map.get(frame)
+        if t is not None and np.isfinite(t):
+            label = f"{int(t // 60)}:{int(t % 60):02d}"
+            cv2.putText(crop, label, (3, 16), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (0, 0, 0), 3)
+            cv2.putText(crop, label, (3, 16), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (80, 255, 255), 1)
         ok2, buf = cv2.imencode(".jpg", crop,
                                 [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         if ok2:
@@ -247,22 +302,41 @@ function refresh(){
   document.getElementById('progress').textContent =
     done + ' / ' + document.querySelectorAll('.card').length + ' filled';
 }
+function entryTeam(c, n){
+  // Human signal beats the (sometimes wrong) card chip: a lineup click
+  // pins the team; else a number unique to one team's lineup decides;
+  // else fall back to the card's team.
+  if(c.dataset.chosenteam) return parseInt(c.dataset.chosenteam);
+  const teams = Object.keys(LINEUP).filter(t => LINEUP[t][n]);
+  if(n && teams.length === 1) return parseInt(teams[0]);
+  return c.dataset.team === '' ? null : parseInt(c.dataset.team);
+}
 function save(c){
   const s = stateLoad();
-  s[c.dataset.mid] = {number: c.querySelector('.num').value.trim(),
+  const n = c.querySelector('.num').value.trim();
+  s[c.dataset.mid] = {number: n,
                       name: c.querySelector('.name').value.trim(),
+                      team: entryTeam(c, n),
                       mixed: c.querySelector('.mix') ?
                              c.querySelector('.mix').checked : false};
   stateSave(s); refresh();
 }
 document.addEventListener('input', ev => {
   const c = ev.target.closest('.card'); if(!c) return;
-  // typing a number auto-fills the name from the lineup (if name empty)
+  if(ev.target.classList.contains('name')) c.dataset.autoname = '';
+  // typing a number auto-fills the name from the lineup; keeps following
+  // the number as long as the name was auto-filled (typing 1 then 8 must
+  // end on #18's name, not stick on #1's)
   if(ev.target.classList.contains('num')){
-    const team = c.dataset.team, n = ev.target.value.trim();
+    const n = ev.target.value.trim();
     const nameEl = c.querySelector('.name');
-    if(LINEUP[team] && LINEUP[team][n] && !nameEl.value.trim())
-      nameEl.value = LINEUP[team][n];
+    const teams = Object.keys(LINEUP).filter(t => LINEUP[t][n]);
+    const t = c.dataset.chosenteam || (teams.length === 1 ? teams[0] : c.dataset.team);
+    const hit = (LINEUP[t]||{})[n];
+    if(!nameEl.value.trim() || c.dataset.autoname === '1'){
+      nameEl.value = hit || '';
+      c.dataset.autoname = hit ? '1' : '';
+    }
   }
   save(c);
 });
@@ -275,6 +349,8 @@ document.addEventListener('click', ev => {
     if(!lastCard){ alert('Click a player card first, then the lineup name.'); return; }
     lastCard.querySelector('.num').value = r.dataset.num;
     lastCard.querySelector('.name').value = r.dataset.name;
+    lastCard.dataset.chosenteam = r.dataset.team;
+    lastCard.dataset.autoname = '';
     save(lastCard);
     return;
   }
@@ -288,6 +364,7 @@ function exportJson(){
     if(has)
       entries[c.dataset.mid] = {number: (e.number||'').trim()? parseInt(e.number):null,
                                 name: (e.name||'').trim()||null,
+                                team: (e.team === 0 || e.team === 1) ? e.team : null,
                                 mixed: !!e.mixed};
   });
   const payload = {slug: document.body.dataset.slug,
@@ -319,8 +396,7 @@ def _lineup_assets(lineup: dict | None) -> tuple:
         by_team[str(tid)] = {str(p["number"]): p["name"]
                              for p in s["players"] if p.get("number")}
         rows = []
-        players = sorted(s["players"],
-                         key=lambda p: (p["substitute"], p["number"] or 99))
+        players = sorted(s["players"], key=lambda p: p["number"] or 99)
         for p in players:
             if not p.get("number"):
                 continue
@@ -442,7 +518,8 @@ def apply_review(json_path: str) -> Path:
         "source": "review_ui",
         "meta_of_track": {str(t): m for t, m in meta_of_track.items()},
         "players": {str(mid): {"name": v.get("name"),
-                               "number": v.get("number")}
+                               "number": v.get("number"),
+                               "team": v.get("team")}
                     for mid, v in clean.items()},
         "mixed_metas": mixed,
     }
