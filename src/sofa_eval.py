@@ -166,13 +166,82 @@ def scorecard(slugs: list) -> None:
               f"(which team dominated — coverage-invariant)")
 
 
+def player_scorecard(slug: str) -> None:
+    """For players WE identify (jersey number + team), compare our pass count
+    to SofaScore's. Absolute counts are coverage-scaled (we only see trusted
+    frames), so the business question is: does our per-player RANKING and
+    relative magnitude track SofaScore for the players a coach would ask
+    about? Reported as rank correlation + a side-by-side of the top passers."""
+    import numpy as np
+    import pandas as pd
+    ev_p = Config.OUTPUT_EVENTS_DIR / f"{slug}_events.json"
+    lu_p = Config.PROJECT_ROOT / "data" / "lineups" / f"{slug}.json"
+    st_p = TRUTH_DIR / slug / "player_base_stats.csv"
+    if not (ev_p.exists() and lu_p.exists() and st_p.exists()):
+        print(f"{slug}: missing inputs for player scorecard")
+        return
+    lu = json.loads(lu_p.read_text(encoding="utf-8"))
+    team_of_name = {lu["home"]["name"]: lu["home"]["classifier_team"],
+                    lu["away"]["name"]: lu["away"]["classifier_team"]}
+    truth = pd.read_csv(st_p)
+    truth["team"] = truth["team_name"].map(team_of_name)
+    truth = truth.dropna(subset=["team", "shirt_number"])
+    truth_pass = {(int(r.team), int(r.shirt_number)): r.totalPass
+                  for r in truth.itertuples()}
+
+    d = json.loads(ev_p.read_text(encoding="utf-8"))
+    ours: dict = {}
+    for e in d["events"]:
+        if e["type"]["name"] != "Pass":
+            continue
+        p = e["player"]
+        num = p.get("jersey_number")
+        pid = p.get("id", -1)
+        if num is None or not (800000 <= pid < 900000):
+            continue
+        team = (pid - 800000) // 1000
+        ours[(team, int(num))] = ours.get((team, int(num)), 0) + 1
+
+    rows = []
+    for key, opass in sorted(ours.items(), key=lambda kv: -kv[1]):
+        tp = truth_pass.get(key)
+        rows.append((key, opass, tp))
+    if not rows:
+        print(f"{slug}: no numbered players in export")
+        return
+    print(f"\n=== {slug}: per-player passes (identified players only) ===")
+    print(f"{'team/#':<8} {'ours':>5} {'Sofa':>5}  {'note':<20}")
+    paired = []
+    for (team, num), opass, tp in rows:
+        note = "" if tp is not None else "not in SofaScore XI"
+        print(f"t{team} #{num:<4} {opass:>5} "
+              f"{('%.0f' % tp) if tp is not None else '  -':>5}  {note}")
+        if tp is not None:
+            paired.append((opass, tp))
+    if len(paired) >= 3:
+        a = np.array(paired, float)
+        # Spearman rank correlation
+        ra = pd.Series(a[:, 0]).rank().to_numpy()
+        rb = pd.Series(a[:, 1]).rank().to_numpy()
+        rho = np.corrcoef(ra, rb)[0, 1]
+        ratio = a[:, 0].sum() / a[:, 1].sum()
+        print(f"\n{len(paired)} matched players | rank corr rho={rho:.2f} "
+              f"| our passes = {ratio*100:.0f}% of SofaScore's (coverage-scaled)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--match", default=None)
+    ap.add_argument("--players", action="store_true",
+                    help="per-player pass validation vs SofaScore")
     args = ap.parse_args()
     slugs = ([args.match] if args.match
              else sorted(p.name for p in TRUTH_DIR.iterdir() if p.is_dir()))
-    scorecard(slugs)
+    if args.players:
+        for s in slugs:
+            player_scorecard(s)
+    else:
+        scorecard(slugs)
 
 
 if __name__ == "__main__":

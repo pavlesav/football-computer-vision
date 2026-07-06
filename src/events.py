@@ -38,6 +38,22 @@ from .game_state import (GameState, trusted_frame_mask, adaptive_conf_min)
 from .ball_tracker import track_ball
 from .roles import infer_attack_direction, identify_goalkeepers
 
+
+def _resolve_idmap(slug: str, period: int) -> Optional[dict]:
+    """Identity map for the export: human anchors EXPANDED by validated
+    propagation (:mod:`src.identity_propagation`, CV precision 1.00) when a
+    human identity file exists, else the raw human map, else None. Propagation
+    only adds correct labels, so this is a safe superset."""
+    try:
+        from .identity_propagation import expanded_identity_map
+        m = expanded_identity_map(slug, period)
+        if m is not None:
+            return m
+    except Exception:
+        pass
+    from .identity import load_identity_map
+    return load_identity_map(slug, period)
+
 # ── Tunables (metres / frames) ───────────────────────────────────────────────
 # Homography trust gate: see game_state.trusted_frame_mask — wide shot AND
 # line-alignment confidence above a per-match adaptive threshold (fixed 0.75
@@ -994,11 +1010,10 @@ def export_events(events: list[Event], slug: str, summary: dict,
                   meta_team: Optional[dict] = None,
                   jersey_numbers: Optional[dict] = None) -> Path:
     """Single-period export → ``output/events/{slug}_p{N}_events.json``."""
-    from .identity import load_identity_map
     Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     period = events[0].period if events else 1
     recs, _, _ = _sb_records_for_period(
-        events, slug, summary, idmap=load_identity_map(slug, period),
+        events, slug, summary, idmap=_resolve_idmap(slug, period),
         meta_map=meta_map, meta_team=meta_team, jersey_numbers=jersey_numbers)
     payload = {
         "slug": slug,
@@ -1066,7 +1081,7 @@ def inject_oracle_goals(slug: str, halves: list) -> int:
     p = oracle_path(slug)
     if not p.exists():
         return 0
-    oracle = json.loads(p.read_text())
+    oracle = json.loads(p.read_text(encoding="utf-8"))
     home = oracle.get("home_team_id")
     if home is None:
         print("goal-oracle present but home_team_id unknown - goals not "
@@ -1119,7 +1134,6 @@ def export_match_events(slug: str, halves: list,
     dict} together resolve confident metas to a period-independent
     shirt-number identity (:mod:`src.jersey_ocr`) — this is what actually
     unifies an outfield player's stats across halves in the merged export."""
-    from .identity import load_identity_map
     Config.OUTPUT_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
     halves = sorted(halves, key=lambda h: h[2])
 
@@ -1134,7 +1148,7 @@ def export_match_events(slug: str, halves: list,
         r, possession, possession_team = _sb_records_for_period(
             events, slug, summary, index_start=len(recs),
             possession=possession, possession_team=possession_team,
-            idmap=load_identity_map(slug, period),
+            idmap=_resolve_idmap(slug, period),
             meta_map=(meta_maps or {}).get(period),
             meta_team=(meta_teams or {}).get(period),
             jersey_numbers=(jersey_maps or {}).get(period))
@@ -1215,7 +1229,7 @@ def main():
     path = export_match_events(args.match, halves, meta_maps=meta_maps,
                                meta_teams=meta_teams_by_p,
                                jersey_maps=jersey_maps)
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     print(f"\n=== {args.match}: {payload['summary']['n_events']} events "
           f"across periods {payload['summary']['periods']} ===")
     print(json.dumps({k: v for k, v in payload["summary"].items()

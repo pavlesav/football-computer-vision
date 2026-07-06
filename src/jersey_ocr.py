@@ -328,7 +328,7 @@ def load_jersey_numbers(slug: str, period: int) -> Optional[dict]:
     p = jersey_path(slug, period)
     if not p.exists():
         return None
-    d = json.loads(p.read_text())
+    d = json.loads(p.read_text(encoding="utf-8"))
     return {int(k): v for k, v in d.get("meta_numbers", {}).items()}
 
 
@@ -339,7 +339,7 @@ def extract(slug: str, period: int, max_crops: int = DEFAULT_MAX_CROPS,
     if out_path.exists() and not force:
         print(f"[{slug} p{period}] jersey_numbers.json already exists - "
               f"skipping (--force to redo)")
-        return json.loads(out_path.read_text())
+        return json.loads(out_path.read_text(encoding="utf-8"))
 
     jobs, track_meta = build_plan(gs, max_crops)
     n_tracks = len(set(j["track_id"] for j in jobs))
@@ -441,7 +441,7 @@ def revote(slug: str, period: int) -> dict:
     """Re-aggregate an existing ``jersey_numbers.json`` from its cached
     per-crop reads — gate/threshold changes never need the ~1h OCR pass."""
     p = jersey_path(slug, period)
-    d = json.loads(p.read_text())
+    d = json.loads(p.read_text(encoding="utf-8"))
     gs = GameState.load(slug, period=period)
     track_reads = {int(t): v["reads"] for t, v in d["track_reads"].items()}
     meta_numbers = aggregate(track_reads, gs)

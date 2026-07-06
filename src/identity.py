@@ -256,11 +256,11 @@ def load_identity_map(slug: str, period: int = 1) -> Optional[dict]:
         legacy = identities_dir() / f"{slug}.json"
         if not legacy.exists():
             return None
-        d = json.loads(legacy.read_text())
+        d = json.loads(legacy.read_text(encoding="utf-8"))
         if int(d.get("period", 1)) != int(period):
             return None
     else:
-        d = json.loads(p.read_text())
+        d = json.loads(p.read_text(encoding="utf-8"))
     meta_of = {int(k): int(v) for k, v in d["meta_of_track"].items()}
     players = {int(k): v for k, v in d["players"].items()}
     return {tid: players[mid] for tid, mid in meta_of.items()

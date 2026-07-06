@@ -1,6 +1,18 @@
 {
   "permissions": {
+    "defaultMode": "acceptEdits",
+    "additionalDirectories": [
+      "C:/Users/PC/Desktop/GitHub/Polutka_Lab"
+    ],
     "allow": [
+      "Bash",
+      "PowerShell",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Read(//c/Users/PC/Desktop/GitHub/Polutka_Lab/**)",
       "Bash(python)",
       "Bash(python -c ':*)",
       "Bash(python _insert_cells.py)",
