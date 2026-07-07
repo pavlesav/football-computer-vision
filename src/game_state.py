@@ -343,7 +343,16 @@ class GameState:
 # QC-validated absolute 0.75 and floored so a match whose stored projections are
 # all garbage still trusts nothing.
 
-HOMOG_CONF_ABS_MAX = 0.75   # QC-validated on sut-mla; never loosen above match evidence
+# Ceiling lowered 0.75 -> 0.35 (2026-07-07) on ground-truth evidence. The old
+# 0.75 pinned 4/6 matches to the ceiling and discarded ~20pp of recoverable
+# passes. Measured at conf_min 0.35: SofaScore pass recall 74%->88% (mean) with
+# possession error FLAT (3.4->3.5pp), and hand-labeled golden pass P/R on
+# sut-mla p2 IMPROVED 0.86/0.75 -> 0.88/0.88 (carrier 99% unchanged) — the
+# extra passes are real, not fabricated. 0.35 (not 0.25) keeps a safety margin:
+# golden is identical at 0.25/0.35 but only covers already-high-confidence
+# frames, so it can't rule out false passes in the newly-admitted 0.25-0.35
+# band; 0.35 captures most of the gain with the least unmeasured risk.
+HOMOG_CONF_ABS_MAX = 0.35   # ground-truth validated; see sweep in session log
 HOMOG_CONF_ABS_MIN = 0.15   # never trust below this, whatever the distribution
 
 
