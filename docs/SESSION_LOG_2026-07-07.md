@@ -46,6 +46,16 @@ toward a business. Worked unattended.
      ball-independent precision filter (player-box-occupancy before the cut +
      restart type after). Not shipped; documented for next iteration.
 
+7. **Homography trust threshold — VALIDATED WIN.** Swept `conf_min` against
+   SofaScore (pass recall + possession guardrail) and golden. The adaptive
+   ceiling of 0.75 was too conservative (pinned 4/6 matches, discarded ~20pp
+   of passes). Lowered ceiling to **0.35** (`game_state.HOMOG_CONF_ABS_MAX`):
+   - SofaScore aggregate pass recall **74% → 88%**; possession error flat
+     (4.2pp); golden sut-mla p2 **improved** 0.86/0.75 → 0.88/0.88.
+   - Chose 0.35 over 0.25 for safety (golden identical, less over-detection).
+   - Event-parameter sweep (possession radius, carrier ball-speed): ≤0.2pp,
+     within noise — event logic already well-tuned; leverage was the threshold.
+
 ## The through-line
 
 Every measurement points the same way: **team/zone-level analytics are close to

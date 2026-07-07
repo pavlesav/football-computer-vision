@@ -14,7 +14,7 @@ number here is reproducible: `python -m src.sofa_eval` (team level) and
 | Final score & goals | **Production** | Oracle 7/7 exact vs real results |
 | Team possession % | **Production** | Mean error **4.2pp** vs SofaScore (1pp on well-covered games) |
 | Which team dominated (pass share) | **Production** | Mean error **3.9pp** |
-| Team pass volume | **Good when covered** | 97% of SofaScore's count at 56% homography coverage; scales down with coverage |
+| Team pass volume | **Good** | **88% of SofaScore's count aggregate** (after the 2026-07-07 trust-threshold fix, up from 74%); night games still coverage-limited |
 | Pass maps / territory / momentum (team & zone) | **Usable** | Built on the above; coverage-limited, not logic-limited |
 | Per-player stats (who passed how much) | **NOT ready** | Rank corr **0.48**, 19% pass recall vs SofaScore |
 | Shots (event-level) | **Not automated** | Detector conservative; needs candidate+human-tag workflow |
@@ -33,11 +33,15 @@ signals — they measure the split, not the absolute count — so they hold even
 when we only see part of the match. This is the strongest evidence that the
 possession→event logic is sound.
 
-**Absolute pass volume tracks SofaScore closely when the camera calibration
-holds.** sut-mla at 56% trusted-homography coverage produced 754 passes vs
-SofaScore's 774 — 97%. The relationship is roughly linear in coverage: at 20%
-coverage (night games) we capture ~43%. So the lever for absolute recall is
-**homography coverage, not the event logic.**
+**Absolute pass volume tracks SofaScore closely.** After the 2026-07-07
+trust-threshold fix (ceiling 0.75→0.35, validated against golden + SofaScore),
+aggregate pass recall is **88%** (was 74%). The old adaptive gate pinned
+well-lit matches to its 0.75 ceiling and discarded ~20pp of real passes; the
+hand-labeled golden set confirmed the newly-admitted passes are genuine
+(sut-mla p2 golden P/R improved 0.86/0.75 → 0.88/0.88). Night games remain
+coverage-limited (~64%). The next lever for absolute recall is **homography
+coverage on night games (PnLCalib fine-tune), not the event logic** — an
+event-parameter sweep moved possession error ≤0.2pp (well-tuned already).
 
 **Goals are certain.** The scoreboard oracle reads the broadcast graphic and
 has matched the real final score on all 7 matches, including catching a
