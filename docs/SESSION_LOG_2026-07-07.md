@@ -81,6 +81,18 @@ capped by track fragmentation** and needs an upstream fix (re-ID tracker), not
 more tuning. The two ranked levers are homography coverage (night games) and
 track re-ID (player tier).
 
+9. **Shot detection — definitively exhausted the geometric options.** Five
+   approaches measured per-shot vs SofaScore (103 shots, 6 matches): ball-
+   toward-goal 13-22%, camera-cut raw 86% recall / 654 cand/match (3% prec),
+   +restart-after 39%, +box-occupancy 76% / 286 cand (6% prec), logistic
+   regression on all signals (leave-one-match-out) — poor, ball features ~0
+   weight. Blocker is structural: shots happen on the close-up where the ball
+   isn't tracked, and ~650 cuts/match make context too generic. **The right
+   tool is an action-spotting CNN on raw frames (SoccerNet approach) — and we
+   already have the training labels (SofaScore shot times + validated clock
+   map).** Or an image-space ball tracker. Goals already certain via oracle
+   (7/7); the gap is non-goal shots. Documented in `shot_candidates.py`.
+
 ## Next session (prioritized)
 
 1. **Inference speed** (business-blocking for 48h delivery): `pnl_stride` 4-5 +

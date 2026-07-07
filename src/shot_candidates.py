@@ -25,12 +25,32 @@ Two signals were evaluated against SofaScore shot timestamps:
   per match; these broadcasts cut to close-up constantly). A final-third ball
   filter cut count ~2x but halved recall.
 
-Conclusion: the camera-transition signal is the right foundation (high recall),
-but needs a precision filter that does NOT depend on the ball (which isn't
-tracked at the shot). The promising next step is **player-box-occupancy before
-the cut** (attackers in the penalty area — players are tracked more reliably
-than the ball) plus **restart type after** (a shot that misses/saves tends to
-yield a goal-kick or corner). Until then, shots stay on the manual-tag path.
+DEFINITIVE CONCLUSION (2026-07-07, after exhausting the geometric options).
+Five approaches measured per-shot vs SofaScore timestamps across 6 matches
+(103 shots):
+  ball-toward-goal            13-22% recall  (~5 cand/match)  — ball untracked
+  camera-cut raw              86% recall     (654 cand/match) — 3% precision
+  camera-cut + restart-after  39% recall     (136 cand/match) — kills recall
+  camera-cut + box-occupancy  76% recall     (286 cand/match) — 6% precision
+  logistic reg (all signals)  poor           — ball features ~0 weight (LOMO CV)
+The blocker is structural: shots occur on the close-up camera where there is
+NO ball tracking, and the broadcast cuts to close-up ~650x/match (shots are
+only ~3%), so contextual signals (box occupancy, restart type) are too generic
+to separate them. The geometric pipeline CANNOT detect non-goal shots.
+
+The RIGHT tool is a different model, not a parameter tweak:
+  1. **Action-spotting CNN on raw frames** (the SoccerNet approach) — a
+     temporal model over frame features that learns the visual signature of a
+     shot (striking motion, ball leaving foot, goal/crowd in frame). We already
+     have the training labels: SofaScore shot timestamps aligned to our video
+     via the validated clock map (p2 offset ~2700s, checked against the goal
+     anchor). ~100 shots over 6 matches is a start; more matches = more labels.
+  2. **Image-space ball tracker** — the ball IS visible on the close-up; a
+     detector/tracker that follows it in pixels (not pitch metres) could catch
+     the ball flying at goal even when homography fails.
+Goals — the highest-value shots — are already handled with certainty by the
+scoreboard oracle (7/7). So the gap is specifically non-goal shots (miss/save),
+which wait on an action-spotting model. Until then, shots are manual-tag.
 
 Run::
 
