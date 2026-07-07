@@ -110,3 +110,20 @@ track re-ID (player tier).
 - SofaScore ground-truth validation harness
 - Identity propagation + per-player validation + encoding fix
 - docs: capability assessment + business plan
+
+## Follow-up: shot action-spotting BUILT (src/shot_spotting.py)
+
+Built the SoccerNet-style model the shot survey recommended, and it works
+at a useful over-detect operating point:
+- **Candidates** = wide→closeup camera cuts (86% shot recall alone).
+- **Features** = ResNet18 embeddings of frames around each cut (wide build-up
+  ++ closeup aftermath) + appearance-invariant geometric block. PCA-64 on the
+  appearance block fixes a severe day/night overfit (train AUC 1.0 → test
+  0.5-0.78 without it). Balanced LR (GB ties).
+- **LOMO CV (103 shots, 6 matches): 89% of reachable / 77% of ALL shots at
+  250 auto-ranked candidates/match** (reachable ceiling 86%; 2.6× fewer than
+  650 raw cuts). Ranks real shots high (sut-mla 9:43→0.75 = SofaScore 9:39).
+- With the goal oracle (100% of goals) this is the shot layer for the
+  over-detect + human-QC workflow. Labels from SofaScore times + validated
+  clock map. Next: complementary candidate source for the unreachable 14%,
+  motion features, more labels.
