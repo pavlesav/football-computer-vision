@@ -56,6 +56,14 @@ toward a business. Worked unattended.
    - Event-parameter sweep (possession radius, carrier ball-speed): ≤0.2pp,
      within noise — event logic already well-tuned; leverage was the threshold.
 
+8. **Sparse events (interceptions/duels/recoveries/fouls) — measured negative.**
+   SofaScore counts are human-semantic; our geometric proxies mismatch 6-7x
+   (interceptions 179 vs 27). Definitions don't map, and these events happen
+   where tracking is weakest (contested/airborne; no ball height, no contact
+   model). Per-team directional correlation only moderate (Spearman 0.69).
+   Conclusion: sparse events are "human-tag or don't offer" — reinforces the
+   team/zone-level product boundary. Not built.
+
 ## The through-line
 
 Every measurement points the same way: **team/zone-level analytics are close to
