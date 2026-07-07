@@ -56,13 +56,22 @@ toward a business. Worked unattended.
    - Event-parameter sweep (possession radius, carrier ball-speed): ≤0.2pp,
      within noise — event logic already well-tuned; leverage was the threshold.
 
-8. **Sparse events (interceptions/duels/recoveries/fouls) — measured negative.**
-   SofaScore counts are human-semantic; our geometric proxies mismatch 6-7x
-   (interceptions 179 vs 27). Definitions don't map, and these events happen
-   where tracking is weakest (contested/airborne; no ball height, no contact
-   model). Per-team directional correlation only moderate (Spearman 0.69).
-   Conclusion: sparse events are "human-tag or don't offer" — reinforces the
-   team/zone-level product boundary. Not built.
+8. **Complete sparse-event survey vs SofaScore.** Per-type verdict (aggregate
+   count ours-vs-Sofa):
+   - **Clearances** (long def-third kick lost): **80% magnitude, per-team
+     Spearman 0.67** — the one promising lead (right ballpark like passes,
+     coverage-limited). Borderline-shippable "estimated"; deferred until the
+     homography night fix. Not wired in.
+   - **Dribbles** (carry past a near opponent): 1.4-3x over, inconsistent
+     (sut-mla 86 vs 31). A take-on is a judged 1v1, not geometry. Marginal.
+   - **Interceptions** 6-7x over (179 vs 27); **duels/recoveries** definition
+     mismatch; **aerials** (no ball height), **fouls** (no contact model),
+     **offside/blocks/miscontrol** (precise line / very low count) — not
+     derivable.
+   - **Rule**: an event is derivable iff it reduces to {ball_xy, player_xy,
+     possession} on WIDE frames. Contact / ball-height / 1v1-intent are not.
+   Reinforces the team/zone-level product boundary; clearances are the single
+   sparse type worth revisiting after the coverage fix.
 
 ## The through-line
 
