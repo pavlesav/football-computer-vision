@@ -199,6 +199,18 @@ confirms with human eyes that mixed-fragment groups (ID swaps + wrong ReID
 merges) are the dominant residual identity error — the GSR-1-style tracklet
 split is the right next model-side investment.
 
+**The reviewer does not have to be human.** sut-pet H2 was reviewed by a
+vision-capable model over exported card contact sheets
+(`scripts/export_verify_crops.py`; 39 cards: 13 confirmed with legible
+numbers, 5 rejected on visible kit/number contradictions, 4 tracks newly
+numbered, 4 flagged mixed, illegible cards honestly skipped). Result:
+#16 lands at 42 vs SofaScore 40; #6 recall improved; rho dipped
+0.62→0.53 *because correct-but-thin players joined the ranking* (t1 #33:
+1 attributed vs 50 true passes — a homography-coverage disclosure, not an
+identity error). Both halves' reviews raised match recall to 39.1% and kept
+attribution ~58%. The review layer is now three-tier: automatic → model
+vision → human, each catching what the previous one can't.
+
 ## The two levers that matter, ranked
 
 1. **Homography coverage** — lifts team-level recall *and* every downstream
