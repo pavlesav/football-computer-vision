@@ -172,6 +172,7 @@ h2.section{margin:26px 24px 4px;font-size:15px;color:var(--dim);
 .crops-wrap{display:flex;gap:8px;align-items:flex-start;margin-bottom:10px}
 .crops{display:flex;gap:6px;overflow-x:auto;flex:1}
 .crops img{height:165px;border-radius:6px}
+.crops video{height:165px;border-radius:6px;background:#000}
 .mini{flex:0 0 140px;border-radius:6px}
 .verdict{display:flex;gap:10px;align-items:center}
 .vbtn{border:1px solid var(--line);background:#222a35;color:var(--txt);
@@ -395,6 +396,43 @@ _MODAL = """
 </div>
 """
 
+def _extract_card_clip(video: str, out_path: Path, fps: float,
+                       rows, pad: int = 48, half_window_s: float = 1.4,
+                       out_h: int = 360) -> bool:
+    """Short cropped MP4 around a card's clearest moment. Humans judge
+    identity far better on motion than on frame strips — the number becomes
+    readable across frames and an ID swap is obvious as a 'jump'. Crop = the
+    union of the fragment's bboxes inside the window (padded), so the player
+    stays in frame without per-frame tracking."""
+    import subprocess
+    rows = rows.copy()
+    rows["h"] = rows.y2 - rows.y1
+    anchor = rows.sort_values("h", ascending=False).iloc[0]
+    f_mid = int(anchor.frame)
+    f0 = max(int(rows.frame.min()), f_mid - int(half_window_s * fps))
+    f1 = min(int(rows.frame.max()), f_mid + int(half_window_s * fps))
+    if f1 - f0 < int(0.6 * fps):
+        f1 = f0 + int(2 * half_window_s * fps)
+    win = rows[(rows.frame >= f0) & (rows.frame <= f1)]
+    if win.empty:
+        win = rows.iloc[[0]]
+    x1 = max(0, int(win.x1.min()) - pad)
+    y1 = max(0, int(win.y1.min()) - pad)
+    x2 = int(win.x2.max()) + pad
+    y2 = int(win.y2.max()) + pad
+    w = (x2 - x1) // 2 * 2
+    h = (y2 - y1) // 2 * 2
+    if w < 64 or h < 64:
+        return False
+    cmd = ["ffmpeg", "-y", "-ss", f"{f0 / fps:.2f}", "-i", video,
+           "-t", f"{(f1 - f0) / fps:.2f}",
+           "-vf", f"crop={w}:{h}:{x1}:{y1},scale=-2:{out_h}",
+           "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "27",
+           "-movflags", "+faststart", str(out_path)]
+    r = subprocess.run(cmd, capture_output=True)
+    return r.returncode == 0 and out_path.exists()
+
+
 _HELP = """
 <details class="help" open><summary><b>How to review (read once — 2 min)</b></summary>
 <p><b>Section 1 — Verify.</b> Each card is one player the computer identified
@@ -419,7 +457,7 @@ identify the player — never type notes into the name field.</p>
 """
 
 
-def build_page(slug: str, period: int) -> Path:
+def build_page(slug: str, period: int, clips: bool = False) -> Path:
     gs = GameState.load(slug, period=period)
     lineup = load_lineup(slug)
     panel, lineup_js, club_of = _lineup_assets(lineup)
@@ -468,6 +506,22 @@ def build_page(slug: str, period: int) -> Path:
     print(f"[{slug} p{period}] collecting crops for {len(sel)} cards...")
     crops = collect_crops(gs, sel, info, prefer=prefer)
 
+    clip_of: dict = {}
+    if clips:
+        from .config import Config as _C
+        media = review_dir() / f"{slug}_p{period}_media"
+        media.mkdir(parents=True, exist_ok=True)
+        video = str(_C.MATCH_VIDEOS[slug])
+        print(f"[{slug} p{period}] extracting {len(sel)} card clips...")
+        for cid in sel:
+            tids = info[cid]["members"]
+            sub = gs.players[gs.players.track_id.isin(tids)]
+            counts = sub.groupby("track_id").size()
+            main = sub[sub.track_id == counts.idxmax()]
+            out = media / f"{cid}.mp4"
+            if out.exists() or _extract_card_clip(video, out, gs.fps, main):
+                clip_of[cid] = f"{media.name}/{out.name}"
+
     id_cards = []
     for key, g in ordered:
         team, num = key
@@ -483,8 +537,10 @@ def build_page(slug: str, period: int) -> Path:
                      '<span class="pname hint">not in lineup!</span>')
         src = ("verified before" if "human" in g["source"] else
                "auto (shirt-number OCR + appearance match)")
-        imgs = "".join(f'<img src="data:image/jpeg;base64,{b}">'
-                       for b in crops[cid])
+        vid = (f'<video src="{clip_of[cid]}" controls loop muted '
+               f'preload="metadata"></video>' if cid in clip_of else "")
+        imgs = vid + "".join(f'<img src="data:image/jpeg;base64,{b}">'
+                             for b in crops[cid])
         id_cards.append(f"""
 <div class="card" data-key="{cid}" data-kind="identity"
      data-team="{team}" data-num="{num}">
@@ -512,8 +568,10 @@ def build_page(slug: str, period: int) -> Path:
         chip = (f'<span class="chip t{team}">'
                 f'{html.escape(club_of.get(team, f"team {team}"))}</span>'
                 if team in (0, 1) else '<span class="chip tn">team ?</span>')
-        imgs = "".join(f'<img src="data:image/jpeg;base64,{b}">'
-                       for b in crops[cid])
+        vid = (f'<video src="{clip_of[cid]}" controls loop muted '
+               f'preload="metadata"></video>' if cid in clip_of else "")
+        imgs = vid + "".join(f'<img src="data:image/jpeg;base64,{b}">'
+                             for b in crops[cid])
         un_cards.append(f"""
 <div class="card" data-key="{cid}" data-kind="track"
      data-team="{team if team in (0, 1) else ''}">
@@ -664,6 +722,10 @@ def main():
     ap = argparse.ArgumentParser(description="Verification-first review page")
     ap.add_argument("--match")
     ap.add_argument("--half", type=int, choices=[1, 2])
+    ap.add_argument("--clips", action="store_true",
+                    help="attach a short cropped video clip to every card "
+                         "(ffmpeg; ~2-3 min/half; page loads clips from the "
+                         "sibling _media/ folder)")
     ap.add_argument("--apply", default=None)
     args = ap.parse_args()
     if args.apply:
@@ -671,7 +733,7 @@ def main():
         return
     if not args.match or not args.half:
         raise SystemExit("--match and --half required (or --apply FILE)")
-    build_page(args.match, args.half)
+    build_page(args.match, args.half, clips=args.clips)
 
 
 if __name__ == "__main__":

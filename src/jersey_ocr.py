@@ -240,6 +240,12 @@ def aggregate(track_reads: dict, gs: GameState) -> dict:
         agreement = votes / total
         if votes < VOTE_MIN or agreement < AGREEMENT_MIN:
             continue
+        if number == 1:
+            # measured VLM failure mode (3 of 7 matches): partial digits on
+            # OUTFIELD shirts read as "1". Real #1s are goalkeepers, whose
+            # identity comes from roles (goalkeeper-t{N}), never from jersey
+            # numbers — so a jersey #1 claim carries no upside and real risk.
+            continue
 
         members = meta_members.get(mid, {mid: 0})
         support = sorted(t for t, c in by_track.items() if c.get(number))
