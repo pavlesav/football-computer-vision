@@ -80,6 +80,11 @@ MIN_TRACK_FRAMES = 10
 # Overridable via env for future sweeps.
 REID_LINK_MIN = float(os.environ.get("REID_LINK_MIN", "0.92"))
 REID_TOPK = int(os.environ.get("REID_TOPK", "3"))
+# Uniqueness-demoted jersey metas seed propagation only above this vote count
+# (the KEPT meta of each (team,number) always seeds). Marginal 3-vote demoted
+# fragments are where residual misreads hide; the floor is swept end-to-end
+# against the pooled SofaScore player tier.
+DEMOTED_SEED_VOTE_MIN = int(os.environ.get("DEMOTED_SEED_VOTE_MIN", "3"))
 
 
 def _anchor_key(info: dict):
@@ -328,6 +333,9 @@ def _jersey_meta_anchors(gs, slug: str, period: int) -> tuple:
     for mid, rec in jn.items():
         team, num = rec.get("team"), rec.get("number")
         if team not in (0, 1) or num is None:
+            continue
+        if ("demoted_for" in rec
+                and int(rec.get("votes", 0)) < DEMOTED_SEED_VOTE_MIN):
             continue
         key = ("num", int(team), int(num))
         key_info.setdefault(key, {"number": int(num), "team": int(team)})

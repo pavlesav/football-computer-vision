@@ -16,7 +16,7 @@ number here is reproducible: `python -m src.sofa_eval` (team level) and
 | Which team dominated (pass share) | **Production** | Mean error **3.9pp** |
 | Team pass volume | **Good** | **88% of SofaScore's count aggregate** (after the 2026-07-07 trust-threshold fix, up from 74%); night games still coverage-limited |
 | Pass maps / territory / momentum (team & zone) | **Usable** | Built on the above; coverage-limited, not logic-limited |
-| Per-player stats (who passed how much) | **NOT ready** | Rank corr **0.48**, 19% pass recall vs SofaScore |
+| Per-player stats (who passed how much) | **Developing** | Attribution **60%** of passes to a numbered player, **82%** of SofaScore XIs identified, recall **54%**, rho 0.38 — fully automatic (VLM numbers + ReID spread; see 2026-07-11 updates) |
 | Shots (event-level) | **Not automated** | Detector conservative; needs candidate+human-tag workflow |
 | Duels / fouls / aerials (event-level) | **Not built** | Genuinely manual across the whole industry |
 
@@ -65,9 +65,86 @@ recall. The cause is not the event logic; it is **identity attribution**. Only
   once the camera jumps, and the persisted appearance embeddings were
   previously measured to carry no within-team identity signal.
 
-So player-level quality is **capped by fragmentation**, and the fix is upstream
+So player-level quality was **capped by fragmentation**, and the fix is upstream
 (a re-ID-capable tracker or a purpose-trained appearance model), not more
 human labeling or more event tuning.
+
+### Update 2026-07-11 — ReID cross-cut identity (the fragmentation fix, in part)
+
+The "purpose-trained appearance model" above was built and measured, and it
+works. A pretrained **osnet_ain_x1_0** ReID model (torchreid multi-source
+domain-generalization weights) run over the stored player bboxes carries strong
+within-team identity signal — **P(same-player pair closer than cross-player
+pair) = 0.835** pooled across 12 labeled halves, vs **0.43 (chance)** for the
+old ResNet18 team-classifier embeddings. The earlier "embeddings carry no
+identity signal" result was specific to ResNet18; it does not generalize.
+
+That unblocked a **cross-cut identity link** in `identity_propagation`: a
+player's fragments on opposite sides of a camera cut — which kinematic handoff
+structurally cannot bridge — are now joined by ReID similarity (same team, no
+temporal overlap, mutual top-k above a cosine floor, jersey-conflict veto), so
+the existing human shirt-number labels spread across cuts **with no new OCR or
+human time**. Measured end-to-end against SofaScore, pooled over all 7 truth
+matches (125 identified players):
+
+| Metric | Before (kinematic only) | After (ReID links) |
+|---|---|---|
+| Per-player pass rank corr rho | 0.360 | **0.433** |
+| Per-player pass recall | 16.6% | **43.1%** |
+| Event-attribution % (passes → a numbered player) | 14.8% | **38.2%** |
+| Team possession / pass-split error | 4.2 / 4.0 pp | **4.2 / 4.0 pp** (unchanged) |
+
+Recall and attribution **2.6×**; rho **up** (more coverage stabilizes the
+ranking). Team-tier is untouched because ReID links are same-team only, so a
+mis-link moves a pass between teammates, never across teams; the pass/carrier
+golden set is identity-invariant and also unchanged (0.79 / 0.94). Player-level
+is now **developing**, not blocked — still short of production (43% recall), but
+no longer capped. Reproduce: `python -m src.reid --eval` (the signal gate) and
+`python -m src.sofa_eval --players` (the lift).
+
+### Update 2026-07-11 (second pass) — fully-automatic identity at scale
+
+Three additions turned the numbered-identity layer from human-seeded to
+**automatic**, measured stage by stage (pooled over the 7 truth matches;
+"XI" = SofaScore lineup players we identify at all):
+
+| Stage | rho | pass recall | attribution | XI coverage |
+|---|---|---|---|---|
+| Baseline (ReID links, human seeds only) | 0.433 | 43.1% | 38.2% | 125/210 |
+| + jersey-meta auto-anchors (easyocr) | 0.423 | 48.1% | 43.9% | ~130/210 |
+| + VLM reader on sut-pet, demote-keep, lineup filter | 0.397 | 51.4% | 52.4% | 145/210 |
+| + VLM reader on ALL matches | **0.381** | **54.2%** | **60.5%** | **173/210 (82%)** |
+
+1. **Jersey-meta auto-anchors** (`identity_propagation._jersey_meta_anchors`):
+   confident jersey metas seed propagation even with NO human identity file.
+   The proof match is sut-pet (zero human labels): **attribution 5%→53%,
+   rho −0.25→+0.40, XI 24/29** — the fully-automatic path works end-to-end.
+2. **Qwen2-VL reader at scale** (`src/jersey_vlm.py`): 17 ms/crop on the RTX
+   5070, ~10 min per half at the full 22k-crop budget — easyocr took ~an hour
+   for 2-6× fewer confident numbers (dec-mla p1: 13 easyocr → 138 VLM metas).
+3. **Uniqueness demotion inverted into a reunification signal**
+   (`jersey_ocr.resolve_uniqueness`): shirt numbers are unique per team, so
+   several gate-passed metas claiming one (team, number) are the same
+   fragmented player. Demoted records are now kept (`demoted_for`) and seed
+   propagation with the same key — **only for VLM files**: with easyocr's
+   sparse reads this measurably reverses (sut-mla rho 0.42→0.04, structured
+   digit confusions), so the seeds are reader-gated. A demoted-seed vote
+   floor of 5 was swept and lost on every pooled metric — 3 stays.
+   Confident (team, number) claims not in the official lineup
+   (`data/lineups/{slug}.json`) are filtered as certain misreads.
+
+**Measured negative result — do not lower the crop-height floor.** Running
+the VLM with `min_box_h` 70 instead of 90 on sut-pet regressed everything
+(rho 0.40→0.12, attribution 53%→49%): sub-90px torso crops read worse AND
+displace tall crops from the capped 22k budget. The floor stays at 90.
+
+Rank correlation dipped 0.43→0.38 while the matched-player set grew 125→173 —
+newly-reached players are the thinly-observed ones, which drag rank stability
+down even as every volume metric rises. Per-match rho now spans 0.70
+(dec-mla) to 0.07 (mla-bud-2 — the night match whose team classifier is the
+known weak link). The residual blockers for player-tier production are
+homography coverage on night games and team-classification quality there —
+identity attribution is no longer the cap.
 
 ## The two levers that matter, ranked
 
@@ -75,10 +152,12 @@ human labeling or more event tuning.
    number, especially on the ~50% of fixtures played under floodlights (night
    coverage collapses to ~17%). Fix: fine-tune PnLCalib on 1.CFL frames using
    the manual-calibration widgets already built. Multi-day, high payoff.
-2. **Track fragmentation / re-ID** — the sole blocker on player-level stats.
-   Fix: a tracker with appearance re-identification, or a trained ReID head, so
-   a player survives camera cuts as one identity. Multi-week, unlocks the
-   player-level product tier.
+2. **Track fragmentation / re-ID** — was the sole blocker on player-level stats;
+   **partially addressed 2026-07-11** by the ReID cross-cut link above (recall
+   17→43%). Remaining headroom: it still spreads only *human-seeded* numbers, so
+   coverage is bounded by how many players were labeled — the next multiplier is
+   **automatic numbers** (VLM jersey OCR) and eventually a ReID-native tracker
+   so a player is one identity from detection, not reconstructed in post.
 
 Everything else (shot candidate detection, set-piece tagging, report polish) is
 comparatively small and well understood.
