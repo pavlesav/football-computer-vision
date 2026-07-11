@@ -36,11 +36,23 @@ TRUTH_DIR = Config.PROJECT_ROOT / "data" / "sofa_truth"
 
 # home/away in SofaScore == home/away on the broadcast graphic. Our classifier
 # team ids are arbitrary; this maps the HOME side to a classifier id (same
-# values verified for the goal oracle / run_batch).
+# values verified for the goal oracle / run_batch). Kept only as a fallback —
+# data/lineups/{slug}.json carries the same mapping and scales past 7 matches.
 HOME_CLASSIFIER_TEAM = {
     "jed-ars": 1, "jez-ars": 0, "jez-jed": 0, "sut-pet": 0,
     "mla-bud-2": 1, "dec-mla": 1, "sut-mla": 1,
 }
+
+
+def home_classifier_team(slug: str):
+    """HOME side's classifier team id: lineups file first, dict fallback."""
+    p = Config.PROJECT_ROOT / "data" / "lineups" / f"{slug}.json"
+    if p.exists():
+        t = (json.loads(p.read_text(encoding="utf-8")).get("home") or {}) \
+            .get("classifier_team")
+        if t in (0, 1):
+            return int(t)
+    return HOME_CLASSIFIER_TEAM.get(slug)
 
 
 def load_truth(slug: str) -> dict:
@@ -79,7 +91,9 @@ def pipeline_metrics(slug: str) -> dict:
         return {}
     d = json.loads(p.read_text(encoding="utf-8"))
     s = d["summary"]
-    home_t = HOME_CLASSIFIER_TEAM[slug]
+    home_t = home_classifier_team(slug)
+    if home_t is None:
+        return {}
     away_t = 1 - home_t
     ht, at = str(home_t), str(away_t)
 
@@ -166,12 +180,18 @@ def scorecard(slugs: list) -> None:
               f"(which team dominated — coverage-invariant)")
 
 
-def player_scorecard(slug: str) -> None:
+def player_scorecard(slug: str, verbose: bool = True) -> dict:
     """For players WE identify (jersey number + team), compare our pass count
     to SofaScore's. Absolute counts are coverage-scaled (we only see trusted
     frames), so the business question is: does our per-player RANKING and
     relative magnitude track SofaScore for the players a coach would ask
-    about? Reported as rank correlation + a side-by-side of the top passers."""
+    about? Reported as rank correlation + a side-by-side of the top passers.
+
+    Returns per-match aggregates so :func:`main` can pool across matches for
+    one stable headline number (per-match samples are tiny). ``paired`` holds
+    (ours, sofa) pairs for players present in BOTH; ``attribution`` is the
+    fraction of Pass EVENTS attributed to a numbered player (the direct
+    measure of the fragmentation problem this iteration targets)."""
     import numpy as np
     import pandas as pd
     ev_p = Config.OUTPUT_EVENTS_DIR / f"{slug}_events.json"
@@ -179,7 +199,7 @@ def player_scorecard(slug: str) -> None:
     st_p = TRUTH_DIR / slug / "player_base_stats.csv"
     if not (ev_p.exists() and lu_p.exists() and st_p.exists()):
         print(f"{slug}: missing inputs for player scorecard")
-        return
+        return {}
     lu = json.loads(lu_p.read_text(encoding="utf-8"))
     team_of_name = {lu["home"]["name"]: lu["home"]["classifier_team"],
                     lu["away"]["name"]: lu["away"]["classifier_team"]}
@@ -191,33 +211,43 @@ def player_scorecard(slug: str) -> None:
 
     d = json.loads(ev_p.read_text(encoding="utf-8"))
     ours: dict = {}
+    n_pass = 0
+    n_pass_numbered = 0
     for e in d["events"]:
         if e["type"]["name"] != "Pass":
             continue
+        n_pass += 1
         p = e["player"]
         num = p.get("jersey_number")
         pid = p.get("id", -1)
         if num is None or not (800000 <= pid < 900000):
             continue
+        n_pass_numbered += 1
         team = (pid - 800000) // 1000
         ours[(team, int(num))] = ours.get((team, int(num)), 0) + 1
 
+    attribution = (n_pass_numbered / n_pass) if n_pass else 0.0
     rows = []
     for key, opass in sorted(ours.items(), key=lambda kv: -kv[1]):
         tp = truth_pass.get(key)
         rows.append((key, opass, tp))
     if not rows:
         print(f"{slug}: no numbered players in export")
-        return
-    print(f"\n=== {slug}: per-player passes (identified players only) ===")
-    print(f"{'team/#':<8} {'ours':>5} {'Sofa':>5}  {'note':<20}")
+        return {"paired": [], "attribution": attribution,
+                "n_pass": n_pass, "n_pass_numbered": n_pass_numbered}
+    if verbose:
+        print(f"\n=== {slug}: per-player passes (identified players only) ===")
+        print(f"{'team/#':<8} {'ours':>5} {'Sofa':>5}  {'note':<20}")
     paired = []
     for (team, num), opass, tp in rows:
-        note = "" if tp is not None else "not in SofaScore XI"
-        print(f"t{team} #{num:<4} {opass:>5} "
-              f"{('%.0f' % tp) if tp is not None else '  -':>5}  {note}")
-        if tp is not None:
-            paired.append((opass, tp))
+        has_tp = tp is not None and not pd.isna(tp)   # NaN totalPass = not counted
+        note = "" if has_tp else "not in SofaScore XI"
+        if verbose:
+            print(f"t{team} #{num:<4} {opass:>5} "
+                  f"{('%.0f' % tp) if has_tp else '  -':>5}  {note}")
+        if has_tp:
+            paired.append((opass, float(tp)))
+    n_truth_players = sum(1 for v in truth_pass.values() if not pd.isna(v))
     if len(paired) >= 3:
         a = np.array(paired, float)
         # Spearman rank correlation
@@ -226,10 +256,18 @@ def player_scorecard(slug: str) -> None:
         rho = np.corrcoef(ra, rb)[0, 1]
         ratio = a[:, 0].sum() / a[:, 1].sum()
         print(f"\n{len(paired)} matched players | rank corr rho={rho:.2f} "
-              f"| our passes = {ratio*100:.0f}% of SofaScore's (coverage-scaled)")
+              f"| our passes = {ratio*100:.0f}% of SofaScore's (coverage-scaled)"
+              f" | event-attribution {attribution*100:.0f}%"
+              f" | XI coverage {len(paired)}/{n_truth_players}")
+    return {"paired": paired, "attribution": attribution,
+            "n_pass": n_pass, "n_pass_numbered": n_pass_numbered,
+            "n_truth_players": n_truth_players}
 
 
 def main():
+    import sys
+    if (sys.stdout.encoding or "").lower() not in ("utf-8", "utf8"):
+        sys.stdout.reconfigure(encoding="utf-8")   # Windows cp1252 console vs Δ
     ap = argparse.ArgumentParser()
     ap.add_argument("--match", default=None)
     ap.add_argument("--players", action="store_true",
@@ -238,8 +276,36 @@ def main():
     slugs = ([args.match] if args.match
              else sorted(p.name for p in TRUTH_DIR.iterdir() if p.is_dir()))
     if args.players:
+        import numpy as np
+        import pandas as pd
+        pooled = []            # (ours, sofa) across all matches
+        attr = []              # per-match attribution %
+        tot_pass = tot_num = tot_truth = 0
         for s in slugs:
-            player_scorecard(s)
+            r = player_scorecard(s)
+            if not r:
+                continue
+            pooled.extend(r["paired"])
+            attr.append(r["attribution"])
+            tot_pass += r["n_pass"]
+            tot_num += r["n_pass_numbered"]
+            tot_truth += r.get("n_truth_players", 0)
+        if len(pooled) >= 3:
+            a = np.array(pooled, float)
+            ra = pd.Series(a[:, 0]).rank().to_numpy()
+            rb = pd.Series(a[:, 1]).rank().to_numpy()
+            rho = np.corrcoef(ra, rb)[0, 1]
+            recall = a[:, 0].sum() / a[:, 1].sum()
+            print("\n" + "=" * 60)
+            print(f"POOLED across {len(slugs)} matches | {len(pooled)} matched "
+                  f"players")
+            print(f"  rank corr rho          = {rho:.3f}")
+            print(f"  pass recall (ours/Sofa)= {recall*100:.1f}%")
+            print(f"  event-attribution %    = {tot_num/tot_pass*100:.1f}% "
+                  f"({tot_num}/{tot_pass} Pass events to a numbered player)")
+            if tot_truth:
+                print(f"  XI coverage            = {len(pooled)}/{tot_truth} "
+                      f"SofaScore players identified at all")
     else:
         scorecard(slugs)
 
