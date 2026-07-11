@@ -59,7 +59,13 @@ football-computer-vision/
 │   ├── team_repair.py                 # Kit-hue audit of track team labels (flip clear errors, flag ID-swap suspects)
 │   ├── stabilize.py                   # Offline homography smoothing (kills the 8Hz overlay jitter) + player-pos recompute
 │   ├── golden_eval.py                 # Score detected passes/carrier vs hand-labeled golden set (precision/recall)
-│   └── render_game_state.py           # Annotated review MP4 from the artifact (supports --start_sec/--duration_sec clips)
+│   ├── render_game_state.py           # Annotated review MP4 from the artifact (supports --start_sec/--duration_sec clips)
+│   ├── reid.py                        # OSNet-AIN appearance ReID over stored bboxes → per-half reid.npz (P(same>cross)=0.835)
+│   ├── identity_propagation.py        # Spreads identity anchors (human + jersey metas) via kinematic handoffs + ReID cross-cut links
+│   ├── jersey_vlm.py                  # Qwen2-VL-2B shirt-number reader (17ms/crop) — drop-in replacement for easyocr, same gates/schema
+│   ├── team_cluster.py                # Unsupervised team assignment from reid.npz (96.3% agreement vs human labels) + conservative --apply repair
+│   ├── verify_ui.py                   # DEFAULT human loop: verify auto identities + name the rest (5-10 min/half) → --apply → identities JSON
+│   └── sofa_eval.py                   # SofaScore ground-truth scorecard (team tier + --players player tier + XI coverage)
 ├── models/                            # All models and weights
 │   ├── detection/                     # Fine-tuned YOLOv8m (weights + training artifacts)
 │   │   ├── weights/best.pt           # Trained model weights
@@ -568,6 +574,52 @@ Run: `python -m src.jersey_ocr --match sut-mla --half 2` (extraction) and `--eva
 table embedded in the module). `events.py --match X` auto-loads `jersey_numbers.json` per
 period (skipped by `--raw_tracks`) — no flag needed once the file exists.
 
+## Automatic Player Identity Stack (2026-07-11) — SUPERSEDES the sparse-coverage story above
+
+Player identity is now **fully automatic** and measured against SofaScore
+(`docs/CAPABILITY_ASSESSMENT.md` has the stage-by-stage table). Pooled over the 7 truth
+matches: **event attribution 60.5% (was 38%), pass recall 54.2%, XI coverage 173/210 (82%),
+rho 0.381**; team tier untouched (possession 4.2pp / pass-split 3.9pp). The zero-human-label
+proof match is sut-pet: attribution 5%→53%, rho −0.25→+0.40. Components, all composable:
+
+- **`src/reid.py`** — OSNet-AIN (osnet_ain_x1_0, weights at `models/reid/`) embeddings over
+  stored bboxes; P(same-player>cross-player)=0.835 (ResNet18 was 0.43=chance). Caches
+  `reid.npz` per half for event-bearing ∪ anchor tracks. **Rebuild with `--force` whenever
+  the anchor set changes** (new jersey file, new identities).
+- **`src/jersey_vlm.py`** — Qwen2-VL-2B batched reader, 17 ms/crop on the RTX 5070; a full
+  half (18-20k crops) takes ~10 min and yields 5-15× easyocr's confident numbers. Same crop
+  plan / votes / structural gates / output schema as jersey_ocr (drop-in). Budget 22k;
+  **min_box_h stays 90** (70 was measured to REGRESS — small crops read worse and displace
+  tall ones). `scripts/vlm_rollout.py` = resumable batch extraction.
+- **`src/identity_propagation.py`** — anchors = human identity entries UNION confident
+  jersey metas (`_jersey_meta_anchors`; works with NO human file). Spread via mutual-best
+  kinematic handoffs + **ReID cross-cut links** (mutual top-3, cosine ≥0.92, same team, no
+  temporal overlap, jersey-conflict veto). Uniqueness-demoted jersey metas (same team+number
+  as a stronger meta = the same fragmented player) also seed — **but only from qwen2-vl
+  files**: with sparse easyocr reads this measurably reversed (sut-mla rho 0.42→0.04,
+  structured digit confusions). Confident numbers not in the match lineup
+  (`data/lineups/{slug}.json`) are filtered as certain misreads; `rejected_numbers` on the
+  identity file (written by verify_ui) veto a (team, number) entirely.
+- **`src/team_cluster.py`** — unsupervised team assignment (SoccerNet-GSR SOTA pattern):
+  cosine k-means over reid.npz + seed-based grouping agrees **96.3% pooled (94-98% every
+  half, incl. night)** with the human-labeled classifier. The per-match 15-min team-labeling
+  step is no longer load-bearing; `--apply` does conservative track-team repair (measured:
+  pooled rho 0.381→0.392). Grouping thresholds SEED_DEDUP=0.90 / JOIN_MIN=0.80 encode two
+  measured failure modes — don't "simplify" them away.
+- **`src/verify_ui.py`** — the DEFAULT human loop (review_ui.py = legacy from-scratch path).
+  Verification page per half: confirm/correct each auto identity (crops span different
+  fragments so bad merges are visible) + name the top unattributed tracks. ~5-10 min/half,
+  instructions embedded (delegable to a student). `--apply` merges into
+  `data/identities/{slug}_p{N}.json`: confirm = lock tracks + real lineup name, reject =
+  `rejected_numbers` veto. Then re-run `python -m src.events --match X`.
+- **`src/sofa_eval.py`** — the iteration harness. `python -m src.sofa_eval` (team tier),
+  `--players` (player tier pooled: rho / recall / attribution / XI coverage). Every identity
+  change is judged here; run with `PYTHONUTF8=1` on Windows.
+
+Standard rebuild chain after ANY identity-layer change:
+`jersey_ocr --revote` (if gates changed) → `reid --force` (if anchors changed) →
+`events --match X` → `sofa_eval --players`.
+
 ## Dataset Conventions
 
 - **Filename format:** `{match-slug}_frame_{frame_number:07d}.jpg` (e.g., `bud-sut_frame_0012345.jpg`)
@@ -593,7 +645,14 @@ period (skipped by `--raw_tracks`) — no flag needed once the file exists.
 - **Team classification** works well on ~10/16 matches, struggles on ~6 where jersey colors are similar or lighting is difficult. All 16 matches labeled and validated via 2-min annotated clips. Majority vote per track is more robust than a single median-embedding prediction but ID swaps from long occlusions can still cause systematic errors.
 - **Referee/GK filtering** — GKs are now identified positionally (`src/roles.py`: deepest-player-in-frame ≥70% + goal-zone residence) and folded into possession with the defending team; refs are excluded by the same signature. The old GMM-probability idea is superseded.
 - **Shots are conservative; goals come from the oracle** — direction-aware validation removed all 7 nearest-goal artifacts; the detector now finds only clear on-target attempts (1 on the sut-mla full match, pixel-verified real). Goals are supplied by the scoreboard goal-oracle with certainty but estimated location and unknown scorer; shot outcomes other than Goal remain Unknown.
-- **Cross-half outfield identity is now automatic but sparse** — `src/jersey_ocr.py` resolves confidently-read shirt numbers to a period-independent id (zero wrong answers / zero uniqueness violations measured on 13 hand-labeled tracks across sut-mla p2 + bok-jed p1; one cross-half match, team 1 #44, visually pixel-confirmed as the same player). But coverage is genuinely low (~20-22 confident metas per sut-mla half out of 1300+, limited by easyocr recall on small back-of-shirt crops, not by the vote thresholds) — most outfield players still fall back to per-half `player-mN` / `player-mN-h2` ids. GKs ARE unified (`goalkeeper-t{N}`, via roles). The persisted team-classifier embeddings were measured to carry NO within-team identity signal (P(same-player pair closer)=0.43) — do not build ReID on them; naming both halves via the identity widget still unifies the rest by name today.
+- **Cross-half outfield identity is AUTOMATIC as of 2026-07-11** (see the Automatic Player
+  Identity Stack section): VLM shirt numbers + ReID propagation attribute 60.5% of pass
+  events to a period-independent numbered player (82% of SofaScore XIs identified). The
+  residual gaps: rank correlation is diluted by thinly-observed players (rho 0.381 pooled,
+  0.70 best / 0.07 worst match), night games are capped by homography coverage (~24%
+  trusted), and ID-swapped tracks (the GSR-1-style tracklet SPLIT step is not built yet).
+  The persisted team-classifier ResNet18 embeddings still carry NO identity signal
+  (P=0.43) — ReID uses OSNet (`src/reid.py`), never those.
 - **Restart over-detection** — the sticky dead-ball trigger finds ~3x the true throw-in count (homography drift parks the ball estimate on the line). Golden shows this does not hurt pass precision, but play_pattern tags are over-applied. Tightening needs a better out-of-bounds signal than position alone.
 - **Tier-2 conditions degrade the chain measurably** (bok-jed golden baseline: pass P/R 0/0, carrier 26%/51%): homography-untrusted stretches blank out whole control intervals, crowds misattribute the carrier via the lagging ball estimate, and roles need at least a half of data. Expect sparse events on Tier-2 batch output.
 - **Goal-oracle team mapping is manual** — pass `--home_team {0|1}` per match (graphics say home/away; classifier team indices are arbitrary).
