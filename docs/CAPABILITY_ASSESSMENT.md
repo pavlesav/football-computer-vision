@@ -238,6 +238,25 @@ the fix), cross-team fragments, ref/staff/GK fragments, and the VLM
 misreading partial digits as "#1" on outfield players (three matches — a
 cheap gate: veto #N=1 claims on non-GK-role groups).
 
+### Update 2026-07-11 (sixth pass) — tracklet split shipped, #1 gate, video-clip review
+
+- **`src/track_split.py`** (the last missing SoccerNet-GSR step): tracks
+  whose VLM reads form two consistent runs of different numbers provably
+  changed player mid-life. Found **396 such tracks across 14 halves**
+  (~28/half — the ID-swap class is that common); split at the run boundary,
+  reads reassigned per fragment, artifact backed up. Effect pooled:
+  **pass recall 56.0→59.1%, attribution 59.1→62.1%** (vetoed conflicts
+  became clean confident numbers on the split halves); rho 0.443→0.419 —
+  the usual dilution as freed thin fragments join the ranking, recoverable
+  with one verify pass over the post-split state.
+- **#1-claim gate** in `jersey_ocr.aggregate`: confident jersey #1 claims
+  are vetoed (measured VLM failure mode on outfield partial digits; real
+  #1s are goalkeepers, identified by roles, never by jersey).
+- **`verify_ui --clips`**: every review card now carries a short cropped
+  MP4 (bbox-tracked crop, ~2.8 s, sibling `_media/` dir, ~2.5 MB/half) in
+  front of the frame strip — humans resolve shirt numbers and spot ID
+  swaps far better on motion than on static crops.
+
 ## The two levers that matter, ranked
 
 1. **Homography coverage** — lifts team-level recall *and* every downstream
