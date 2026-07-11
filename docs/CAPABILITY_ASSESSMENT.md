@@ -176,6 +176,29 @@ clustering (embed all substantial tracks with `reid --all_tracks`, cluster,
 write team_id) with the review UI as QC instead of source. This removes the
 last per-match human step before the identity review itself.
 
+### Update 2026-07-11 (fourth pass) — the human verification loop, measured on real usage
+
+Pavle ran the first real review with `src/verify_ui.py` (verification-first
+UI: confirm/correct each machine-proposed identity, name the residual
+unattributed tracks) on **sut-pet half 1** — a match with zero prior human
+input — in ~10 minutes: 8 identities confirmed, 7 rejected, 5 tracks newly
+named, 4 flagged as mixed. Measured effect:
+
+| Scope | rho | pass recall | attribution | XI |
+|---|---|---|---|---|
+| sut-pet before (fully automatic) | 0.398 | 29.4% | 53.1% | 24/29 |
+| sut-pet after (H1 verified, H2 untouched) | **0.619** | 38.3% | 58.5% | 21/29 |
+| pooled 7 matches | 0.392 → **0.426** | 55.9% | 60.9% | 170/210 |
+
+XI drops because rejections delete wrong identities — precision cleanup by
+design (e.g. t0 #16 is now exactly 40 passes vs SofaScore's 40). The
+cost/benefit line for the business plan: **~10 min of delegable human
+verification per half buys ~+0.2 rho on that match**; a full 14-half sweep is
+~2.5 h of student work. The 7-of-15 rejection rate on identity cards also
+confirms with human eyes that mixed-fragment groups (ID swaps + wrong ReID
+merges) are the dominant residual identity error — the GSR-1-style tracklet
+split is the right next model-side investment.
+
 ## The two levers that matter, ranked
 
 1. **Homography coverage** — lifts team-level recall *and* every downstream

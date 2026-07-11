@@ -159,7 +159,8 @@ h2.section{margin:26px 24px 4px;font-size:15px;color:var(--dim);
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
       padding:12px 14px;position:relative}
 .card.v-ok{border-color:var(--ok)} .card.v-fix{border-color:var(--accent)}
-.card.v-bad{border-color:var(--bad)} .card.done{}
+.card.v-bad{border-color:var(--bad)} .card.v-skip{border-color:#5a6675}
+.vbtn.skip.active{background:#5a6675;border-color:#5a6675;color:#fff}
 .head{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:13px}
 .bignum{font-size:24px;font-weight:800;min-width:52px;text-align:center;
         background:#0e1116;border-radius:8px;padding:2px 8px}
@@ -241,6 +242,9 @@ function refresh(){
     } else {
       const filled = (e.number||'').trim() || (e.name||'').trim() || e.mixed;
       if(filled){ c.classList.add((e.mixed)?'v-bad':'v-fix'); done++; }
+      else if(e.skipped){ c.classList.add('v-skip'); done++; }
+      c.querySelectorAll('.vbtn.skip').forEach(
+        b=>b.classList.toggle('active', !!e.skipped && !filled));
     }
     const numEl = c.querySelector('.num'); if(numEl) numEl.value = e.number||'';
     const nameEl = c.querySelector('.name'); if(nameEl) nameEl.value = e.name||'';
@@ -276,7 +280,12 @@ document.addEventListener('click', ev => {
   const b = ev.target.closest('.vbtn');
   if(b){
     const c = b.closest('.card'); lastCard = c;
-    save(c, {verdict: b.classList.contains('ok') ? 'ok' : 'bad'});
+    if(b.classList.contains('skip')){
+      const s = stateLoad(); const e = s[c.dataset.key]||{};
+      save(c, {skipped: !e.skipped});
+    } else {
+      save(c, {verdict: b.classList.contains('ok') ? 'ok' : 'bad'});
+    }
     return;
   }
   const r = ev.target.closest('.lp-row');
@@ -402,7 +411,8 @@ and leave the correction empty.</li>
 <p><b>Section 2 — Name the rest.</b> These players got no number
 automatically. Type the shirt number if you can read/recognize it (use the
 mini-pitch position and the lineup panel). Tick <b>2+ players mixed</b> when
-one card shows two different people. Leave blank if you can't tell.</p>
+one card shows two different people. Press <b>Can't tell</b> if you can't
+identify the player — never type notes into the name field.</p>
 <p>Everything auto-saves in the browser. When done press
 <b>Export JSON</b> and send the downloaded file back.</p></details>
 """
@@ -513,6 +523,7 @@ def build_page(slug: str, period: int) -> Path:
     <label>#</label><input type="text" class="num" inputmode="numeric">
     <label>name</label><input type="text" class="name" placeholder="optional">
     <label class="hint"><input type="checkbox" class="mix"> 2+ players mixed</label>
+    <button class="vbtn skip" style="margin-left:auto">Can't tell</button>
   </div>
 </div>""")
 
