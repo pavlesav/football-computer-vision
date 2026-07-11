@@ -146,6 +146,36 @@ known weak link). The residual blockers for player-tier production are
 homography coverage on night games and team-classification quality there —
 identity attribution is no longer the cap.
 
+### Update 2026-07-11 (third pass) — unsupervised team assignment validated (SOTA pattern)
+
+Both the SoccerNet-2025 GSR winner (GSR-1) and the prior SOTA ("From
+Broadcast to Minimap", CVPRW 2025) assign teams by *clustering appearance-ReID
+embeddings* — no per-match supervision. Tested on our footage
+(`src/team_cluster.py`, cosine k-means over the cached OSNet reid.npz + a
+seed-based cluster→team grouping):
+
+- **Agreement with the human-labeled classifier: 96.3% pooled, 94.1–97.7% on
+  every one of 14 halves** — including the night match (mla-bud-2, 97.4%),
+  where raw k-means clusters are still ~98% team-pure even though the two
+  teams' centroids converge to 0.79–0.94 cosine under floodlights.
+- Two grouping failure modes were found and engineered around: a team's kit
+  splitting into multiple appearance clusters (sut-pet p2 — naive
+  "two biggest clusters = two teams" paired two fragments of the SAME team),
+  and night-game team-vs-team similarity exceeding ref-vs-team similarity
+  (which collapses agglomerative merging). The seed rule (biggest cluster =
+  team A; team B = biggest cluster below 0.90 cosine to A; join floor 0.80,
+  else refs/other) handles both.
+- **Conservative repair applied** (`--apply` flips a stored track team only on
+  confident disagreement, margin ≥ 0.05, GKs excluded; parquet backed up):
+  46 tracks across mla-bud-2 + jed-ars → rho 0.07→0.11 and 0.23→0.26, pooled
+  rho 0.381→**0.392**, team pass-split error 4.0→3.9pp, nothing regressed.
+
+**Operational consequence:** the ~15 min/match human team-labeling step is no
+longer load-bearing — for new matches, teams can be bootstrapped from OSNet
+clustering (embed all substantial tracks with `reid --all_tracks`, cluster,
+write team_id) with the review UI as QC instead of source. This removes the
+last per-match human step before the identity review itself.
+
 ## The two levers that matter, ranked
 
 1. **Homography coverage** — lifts team-level recall *and* every downstream
