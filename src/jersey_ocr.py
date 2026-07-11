@@ -367,7 +367,22 @@ def load_jersey_numbers(slug: str, period: int,
         out = {k: v for k, v in out.items()
                if v.get("team") not in (0, 1)
                or int(v["number"]) in squad.get(int(v["team"]), set())}
+    rejected = _rejected_numbers(slug, period)
+    if rejected:
+        out = {k: v for k, v in out.items()
+               if (v.get("team"), v.get("number")) not in rejected}
     return out
+
+
+def _rejected_numbers(slug: str, period: int) -> set:
+    """{(team, number)} a human marked WRONG in the verify UI — the export
+    must stop minting these identities. Stored on the identity file."""
+    from .identity import identity_path
+    p = identity_path(slug, period)
+    if not p.exists():
+        return set()
+    d = json.loads(p.read_text(encoding="utf-8"))
+    return {(int(t), int(n)) for t, n in d.get("rejected_numbers", [])}
 
 
 def extract(slug: str, period: int, max_crops: int = DEFAULT_MAX_CROPS,
