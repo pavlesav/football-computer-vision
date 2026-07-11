@@ -132,11 +132,11 @@ def read_number(crop: np.ndarray) -> Optional[tuple]:
 
 # ── Crop planning ─────────────────────────────────────────────────────────
 
-def _pick_frames(sub: pd.DataFrame) -> list:
-    """Up to MAX_FRAMES_PER_TRACK rows: tallest boxes (h >= MIN_BOX_H) first,
+def _pick_frames(sub: pd.DataFrame, min_box_h: int = MIN_BOX_H) -> list:
+    """Up to MAX_FRAMES_PER_TRACK rows: tallest boxes (h >= min_box_h) first,
     skipping any candidate within FRAME_DEDUP_GAP frames of an already-picked
     one so the sample spreads across the track's lifetime."""
-    tall = sub[sub.h >= MIN_BOX_H].sort_values("h", ascending=False)
+    tall = sub[sub.h >= min_box_h].sort_values("h", ascending=False)
     picks, picked_frames = [], []
     for r in tall.itertuples(index=False):
         f = int(r.frame)
@@ -149,7 +149,8 @@ def _pick_frames(sub: pd.DataFrame) -> list:
     return picks
 
 
-def build_plan(gs: GameState, max_crops: int) -> tuple:
+def build_plan(gs: GameState, max_crops: int,
+               min_box_h: int = MIN_BOX_H) -> tuple:
     """Crop jobs ordered by descending meta total-frames (spend the crop
     budget on the most prominent players first), truncated to ``max_crops``.
     Returns ``(jobs, track_meta)`` — ``jobs``: list of dicts with
@@ -180,7 +181,7 @@ def build_plan(gs: GameState, max_crops: int) -> tuple:
     jobs = []
     for mid in meta_order:
         for tid in sorted(tracks_by_meta[mid], key=lambda t: -row_counts[t]):
-            for r in _pick_frames(by_track[tid]):
+            for r in _pick_frames(by_track[tid], min_box_h):
                 jobs.append({"track_id": int(tid), "meta_id": int(mid),
                             "frame": int(r.frame), "x1": int(r.x1),
                             "y1": int(r.y1), "x2": int(r.x2), "y2": int(r.y2)})
@@ -274,11 +275,16 @@ def aggregate(track_reads: dict, gs: GameState) -> dict:
 
 
 def resolve_uniqueness(meta_numbers: dict) -> dict:
-    """Within (team, number), keep only the highest-vote meta; demote the
-    rest (same-team same-number metas are usually the same fragmented player,
-    but a demotion only costs the weaker fragment its #N naming — it can
-    never mint a wrong identity). Team-None metas can't be grouped or
-    exported; they are kept in the file for diagnostics only."""
+    """Within (team, number), the highest-vote meta keeps the number; the
+    rest are MARKED ``demoted_for`` (not dropped). Shirt numbers are unique
+    within a team, so several gate-passed metas claiming the same (team,
+    number) are overwhelmingly the same fragmented player — under a dense
+    reader (VLM) this is the strongest automatic fragmentation-reunification
+    signal we have. The export path stays conservative
+    (:func:`load_jersey_numbers` filters demoted records by default);
+    identity propagation opts in and seeds them all with the SAME identity
+    key, which can never mint a second identity. Team-None metas can't be
+    grouped or exported; they are kept in the file for diagnostics only."""
     groups: dict = defaultdict(list)
     for mid, rec in meta_numbers.items():
         if rec.get("team") is None:
@@ -291,11 +297,11 @@ def resolve_uniqueness(meta_numbers: dict) -> dict:
             continue
         ranked = sorted(mids, key=lambda m: -out[m]["votes"])
         keep = ranked[0]
+        print(f"  uniqueness: team {team} #{num} - {len(mids)} metas, keeping "
+              f"{keep} ({out[keep]['votes']} votes), {len(mids)-1} demoted "
+              f"(same-player fragments; propagation still seeds them)")
         for m in ranked[1:]:
-            print(f"  uniqueness collision: team {team} #{num} - keeping "
-                  f"meta {keep} ({out[keep]['votes']} votes), demoting meta "
-                  f"{m} ({out[m]['votes']} votes)")
-            del out[m]
+            out[m] = {**out[m], "demoted_for": int(keep)}
     return out
 
 
@@ -322,14 +328,46 @@ def jersey_path(slug: str, period: int) -> Path:
     return game_state_dir(slug, period) / "jersey_numbers.json"
 
 
-def load_jersey_numbers(slug: str, period: int) -> Optional[dict]:
+def lineup_numbers(slug: str) -> Optional[dict]:
+    """{classifier_team: set(shirt numbers)} from ``data/lineups/{slug}.json``
+    (starters + subs), or None when no lineup file exists. A confident meta
+    claiming a (team, number) not in the match squad is a certain misread —
+    lineups are public facts, so this guard is production-safe."""
+    p = Config.PROJECT_ROOT / "data" / "lineups" / f"{slug}.json"
+    if not p.exists():
+        return None
+    d = json.loads(p.read_text(encoding="utf-8"))
+    out: dict = {}
+    for side in ("home", "away"):
+        s = d.get(side) or {}
+        team = s.get("classifier_team")
+        if team not in (0, 1):
+            return None      # mapping unknown -> no filtering
+        out[int(team)] = {int(pl["number"]) for pl in s.get("players", [])
+                          if pl.get("number") is not None}
+    return out
+
+
+def load_jersey_numbers(slug: str, period: int,
+                        include_demoted: bool = False) -> Optional[dict]:
     """{meta_id: {"number", "votes", "reads", "agreement"}} for confident
-    metas, or None if extraction hasn't been run for this (slug, period)."""
+    metas, or None if extraction hasn't been run for this (slug, period).
+    Uniqueness-demoted records (same team+number as a stronger meta — almost
+    always the same fragmented player) are excluded unless
+    ``include_demoted``; identity propagation opts in to use them as seeds."""
     p = jersey_path(slug, period)
     if not p.exists():
         return None
     d = json.loads(p.read_text(encoding="utf-8"))
-    return {int(k): v for k, v in d.get("meta_numbers", {}).items()}
+    out = {int(k): v for k, v in d.get("meta_numbers", {}).items()}
+    if not include_demoted:
+        out = {k: v for k, v in out.items() if "demoted_for" not in v}
+    squad = lineup_numbers(slug)
+    if squad:
+        out = {k: v for k, v in out.items()
+               if v.get("team") not in (0, 1)
+               or int(v["number"]) in squad.get(int(v["team"]), set())}
+    return out
 
 
 def extract(slug: str, period: int, max_crops: int = DEFAULT_MAX_CROPS,

@@ -40,17 +40,19 @@ from .roles import infer_attack_direction, identify_goalkeepers
 
 
 def _resolve_idmap(slug: str, period: int) -> Optional[dict]:
-    """Identity map for the export: human anchors EXPANDED by validated
-    propagation (:mod:`src.identity_propagation`, CV precision 1.00) when a
-    human identity file exists, else the raw human map, else None. Propagation
-    only adds correct labels, so this is a safe superset."""
+    """Identity map for the export: identity seeds (human anchors when a file
+    exists, UNIONed with confident jersey metas) EXPANDED by validated
+    propagation (:mod:`src.identity_propagation` — kinematic handoffs + ReID
+    cross-cut links). Falls back to the raw human map if propagation errors,
+    else None."""
     try:
         from .identity_propagation import expanded_identity_map
         m = expanded_identity_map(slug, period)
         if m is not None:
             return m
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[{slug} p{period}] identity propagation failed "
+              f"({type(e).__name__}: {e}) — raw human map only")
     from .identity import load_identity_map
     return load_identity_map(slug, period)
 
