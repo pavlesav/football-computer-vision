@@ -55,11 +55,35 @@ def sheet(gs, cap, tids, prefer, time_map, k=8, crop_h=190):
                         for t in tiles])
 
 
+def _label_strip(text: str, width: int, h: int = 26) -> np.ndarray:
+    strip = np.full((h, width, 3), (25, 28, 34), np.uint8)
+    cv2.putText(strip, text, (6, 19), cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (120, 220, 255), 1, cv2.LINE_AA)
+    return strip
+
+
+def _stack(rows: list) -> np.ndarray:
+    """Vertically stack (label, image) rows onto one canvas."""
+    width = max(img.shape[1] for _, img in rows)
+    parts = []
+    for label, img in rows:
+        if img.shape[1] < width:
+            img = cv2.copyMakeBorder(img, 0, 0, 0, width - img.shape[1],
+                                     cv2.BORDER_CONSTANT, value=(15, 15, 15))
+        parts.append(_label_strip(label, width))
+        parts.append(img)
+    return cv2.vconcat(parts)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--match", required=True)
     ap.add_argument("--half", type=int, required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--stack", type=int, default=0,
+                    help="cards per stacked sheet (0 = one file per card)")
+    ap.add_argument("--top_un", type=int, default=18,
+                    help="max unattributed cards")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -72,6 +96,7 @@ def main():
     cap = cv2.VideoCapture(str(Config.MATCH_VIDEOS[args.match]))
 
     manifest = {"slug": args.match, "period": args.half, "cards": []}
+    rows = []          # (label, image, card-record)
     ordered = sorted(groups.items(), key=lambda kv: -kv[1]["events"])
     ordered = [(k, g) for k, g in ordered if g["events"] > 0][:40]
     for (team, num), g in ordered:
@@ -81,26 +106,36 @@ def main():
         img = sheet(gs, cap, g["tids"], prefer, time_map)
         if img is None:
             continue
-        name = f"i_{team}_{num}.jpg"
-        cv2.imwrite(str(out / name), img,
-                    [cv2.IMWRITE_JPEG_QUALITY, 90])
-        manifest["cards"].append({
-            "key": f"i_{team}_{num}", "kind": "identity", "team": team,
-            "number": num, "events": g["events"],
-            "fragments": len(g["tids"]), "file": name})
-    for tid, n, team in [u for u in unattributed if u[1] >= 2][:18]:
+        rec = {"key": f"i_{team}_{num}", "kind": "identity", "team": team,
+               "number": num, "events": g["events"],
+               "fragments": len(g["tids"])}
+        rows.append((f"i_{team}_{num}  CLAIM team{team} #{num}  "
+                     f"({g['events']} ev, {len(g['tids'])} frags)", img, rec))
+    for tid, n, team in [u for u in unattributed if u[1] >= 2][:args.top_un]:
         img = sheet(gs, cap, [tid], read_frames.get(tid, set()), time_map)
         if img is None:
             continue
-        name = f"u_{tid}.jpg"
-        cv2.imwrite(str(out / name), img,
-                    [cv2.IMWRITE_JPEG_QUALITY, 90])
-        manifest["cards"].append({
-            "key": f"u_{tid}", "kind": "track", "team": team,
-            "events": n, "file": name})
+        rec = {"key": f"u_{tid}", "kind": "track", "team": team, "events": n}
+        rows.append((f"u_{tid}  team{team}  ({n} ev)", img, rec))
     cap.release()
+
+    if args.stack > 0:
+        for si in range(0, len(rows), args.stack):
+            chunk = rows[si:si + args.stack]
+            name = f"sheet_{si // args.stack:02d}.jpg"
+            cv2.imwrite(str(out / name), _stack([(l, im) for l, im, _ in chunk]),
+                        [cv2.IMWRITE_JPEG_QUALITY, 88])
+            for _, _, rec in chunk:
+                manifest["cards"].append({**rec, "file": name})
+    else:
+        for label, img, rec in rows:
+            name = rec["key"] + ".jpg"
+            cv2.imwrite(str(out / name), img,
+                        [cv2.IMWRITE_JPEG_QUALITY, 90])
+            manifest["cards"].append({**rec, "file": name})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print(f"{len(manifest['cards'])} card sheets -> {out}")
+    print(f"{len(manifest['cards'])} cards in "
+          f"{len(set(c['file'] for c in manifest['cards']))} files -> {out}")
 
 
 if __name__ == "__main__":

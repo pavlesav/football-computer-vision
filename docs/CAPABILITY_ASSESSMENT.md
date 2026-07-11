@@ -211,6 +211,33 @@ identity error). Both halves' reviews raised match recall to 39.1% and kept
 attribution ~58%. The review layer is now three-tier: automatic → model
 vision → human, each catching what the previous one can't.
 
+### Update 2026-07-11 (fifth pass) — model-vision review of ALL 12 remaining halves
+
+The full review sweep was executed by the vision model (stacked contact
+sheets, ~86 images total; verdict protocol: confirm only on a legible
+number, reject on kit/number contradiction, same-team number conflict
+always rejects, one stray cross-team crop in a 7+-crop clean group
+confirms, never guess an illegible digit). Totals across 12 halves:
+**~150 identities confirmed (with real lineup names attached), 29
+rejected, 2 corrected (#22→#77, #9→#19 — both re-keyed on visible
+evidence), 14 tracks newly numbered, 13 flagged mixed.**
+
+| Pooled (7 matches) | rho | recall | attribution | XI |
+|---|---|---|---|---|
+| Morning baseline (human seeds only) | 0.433 | 43.1% | 38.2% | 125/210 |
+| VLM automatic (no review) | 0.381 | 54.2% | 60.5% | 173/210 |
+| + full review sweep (Pavle H1 + model 13 halves) | **0.443** | **56.0%** | 59.1% | 161/210 |
+
+Per-match rho after review: jez-jed **0.74**, dec-mla **0.71**, sut-mla
+**0.66**, sut-pet **0.53**, jez-ars 0.36, jed-ars 0.29, mla-bud-2 0.09.
+Every reviewed number beats its automatic-only value; the two laggards are
+the matches whose trusted-homography coverage (not identity) is the
+binding constraint. Recurring rejection causes, in order: same-team number
+conflicts inside one group (the ID-swap/merge class — tracklet split is
+the fix), cross-team fragments, ref/staff/GK fragments, and the VLM
+misreading partial digits as "#1" on outfield players (three matches — a
+cheap gate: veto #N=1 claims on non-GK-role groups).
+
 ## The two levers that matter, ranked
 
 1. **Homography coverage** — lifts team-level recall *and* every downstream
