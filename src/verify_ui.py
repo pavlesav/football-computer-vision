@@ -200,6 +200,23 @@ body.has-lineup .grid,body.has-lineup details.help,body.has-lineup h2.section
 .lp-sub{opacity:0.6}
 .lp-pos{margin-left:auto;color:#68809a}
 .lp-hint{color:#68809a;font-size:12px;margin-bottom:4px}
+#exportModal{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;
+             display:none;align-items:center;justify-content:center}
+#exportModal.open{display:flex}
+#exportBox{background:var(--panel);border:1px solid var(--line);
+           border-radius:12px;width:min(720px,92vw);max-height:86vh;
+           display:flex;flex-direction:column;padding:16px 18px;gap:10px}
+#exportBox h3{margin:0;font-size:16px}
+#exportBox .hint{line-height:1.5}
+#exportTa{flex:1;min-height:280px;background:#0e1116;color:#cfe0f0;
+          border:1px solid #3a4656;border-radius:8px;padding:10px;
+          font:12px/1.45 Consolas,monospace;white-space:pre;resize:vertical}
+#exportBox .row{display:flex;gap:10px;align-items:center}
+#copyBtn{background:var(--accent);color:#fff;border:0;padding:10px 22px;
+         border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+#closeBtn{background:#222a35;color:var(--txt);border:1px solid var(--line);
+          padding:10px 18px;border-radius:8px;font-size:14px;cursor:pointer}
+#copyMsg{color:var(--ok);font-size:13px;font-weight:600}
 """
 
 _JS = """
@@ -318,13 +335,54 @@ function exportJson(){
   const payload = {slug: document.body.dataset.slug,
                    period: parseInt(document.body.dataset.period),
                    mode: 'verify', identities, unattributed};
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = payload.slug + '_p' + payload.period + '_verify.json';
-  a.click();
+  const fname = payload.slug + '_p' + payload.period + '_verify.json';
+  const text = JSON.stringify(payload, null, 2);
+  // A real download works when the page is opened as a local file, but
+  // sandboxed previews (claude.ai artifacts, some viewers) silently block
+  // it — so ALWAYS also open the copy-paste modal with the same JSON.
+  try {
+    const blob = new Blob([text], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch(e) {}
+  document.getElementById('exportFname').textContent = fname;
+  document.getElementById('exportTa').value = text;
+  document.getElementById('copyMsg').textContent = '';
+  document.getElementById('exportModal').classList.add('open');
+}
+function copyExport(){
+  const ta = document.getElementById('exportTa');
+  ta.focus(); ta.select();
+  const done = () => document.getElementById('copyMsg').textContent = 'Copied!';
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(ta.value).then(done, () => {
+      document.execCommand('copy'); done(); });
+  else { document.execCommand('copy'); done(); }
+}
+function closeExport(){
+  document.getElementById('exportModal').classList.remove('open');
 }
 window.addEventListener('load', refresh);
+"""
+
+_MODAL = """
+<div id="exportModal">
+  <div id="exportBox">
+    <h3>Export — your review as JSON</h3>
+    <div class="hint">If a file download didn't start automatically (blocked
+    in preview windows), copy the text below into a file named
+    <b id="exportFname"></b> and send it back / run
+    <code>python -m src.verify_ui --apply &lt;file&gt;</code>.</div>
+    <textarea id="exportTa" readonly></textarea>
+    <div class="row">
+      <button id="copyBtn" onclick="copyExport()">Copy to clipboard</button>
+      <span id="copyMsg"></span>
+      <button id="closeBtn" onclick="closeExport()" style="margin-left:auto">Close</button>
+    </div>
+  </div>
+</div>
 """
 
 _HELP = """
@@ -479,6 +537,7 @@ def build_page(slug: str, period: int) -> Path:
 <h2 class="section">2 · Name the rest — players the computer couldn't number</h2>
 <div class="grid">{''.join(un_cards)}</div>
 {panel}
+{_MODAL}
 <script>{lineup_js}
 {_JS}</script>
 </body></html>"""
