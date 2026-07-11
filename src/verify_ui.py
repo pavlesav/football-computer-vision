@@ -343,7 +343,8 @@ function exportJson(){
   });
   const payload = {slug: document.body.dataset.slug,
                    period: parseInt(document.body.dataset.period),
-                   mode: 'verify', identities, unattributed};
+                   mode: 'verify', identities, unattributed,
+                   groups: (typeof GROUPS !== 'undefined' ? GROUPS : {})};
   const fname = payload.slug + '_p' + payload.period + '_verify.json';
   const text = JSON.stringify(payload, null, 2);
   // A real download works when the page is opened as a local file, but
@@ -550,6 +551,10 @@ def build_page(slug: str, period: int) -> Path:
 {panel}
 {_MODAL}
 <script>{lineup_js}
+// Track sets behind each identity card, frozen at page-build time: apply
+// uses THESE, so a review stays valid even if the pipeline state moves on.
+const GROUPS = {json.dumps({f"i_{k[0]}_{k[1]}": g["tids"]
+                            for k, g in ordered})};
 {_JS}</script>
 </body></html>"""
 
@@ -570,7 +575,16 @@ def apply_verify(json_path: str) -> Path:
     d = json.loads(Path(json_path).read_text(encoding="utf-8"))
     slug, period = d["slug"], int(d["period"])
     gs = GameState.load(slug, period=period)
-    groups, _, _ = resolve_groups(gs, slug, period)
+    frozen = d.get("groups") or {}
+    if frozen:
+        # exports from pages that embed their track sets: apply to exactly
+        # the tracks the reviewer SAW, immune to pipeline-state drift
+        groups = {}
+        for key, tids in frozen.items():
+            _, t, n = key.split("_")
+            groups[(int(t), int(n))] = {"tids": [int(x) for x in tids]}
+    else:
+        groups, _, _ = resolve_groups(gs, slug, period)
     lineup = load_lineup(slug)
     lineup_names = {}
     if lineup:

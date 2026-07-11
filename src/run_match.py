@@ -1,6 +1,9 @@
 """
 One-command full-match processing: perception for both halves → stabilize →
-goal oracle → merged StatsBomb events → one-page report.
+VLM jersey numbers → goal oracle → ReID embeddings → merged StatsBomb events
+→ one-page report. After it finishes, generate the human verification page
+(``python -m src.verify_ui --match X --half N``) — ~5-10 min of review per
+half locks names and kills wrong identities.
 
 Designed for overnight batch use, so it is **resumable**: every step records
 completion in ``output/match_runs/{slug}_status.json`` and finished artifacts
@@ -114,13 +117,23 @@ def process_match(slug: str, home_team: int, pnl_stride: int = 3,
             _run(slug, step, ["src.stabilize", "--match", slug,
                               "--half", str(period), "--apply"])
         step = f"jersey_p{period}"
-        if status.get(step) or (game_state_dir(slug, period)
-                                / "jersey_numbers.json").exists():
-            print(f"[{slug}] {step}: done - skip", flush=True)
+        jp = game_state_dir(slug, period) / "jersey_numbers.json"
+        have_vlm = False
+        if jp.exists():
+            have_vlm = (json.loads(jp.read_text(encoding="utf-8"))
+                        .get("params", {}).get("reader") == "qwen2-vl")
+        if have_vlm:
+            print(f"[{slug}] {step}: qwen2-vl numbers exist - skip",
+                  flush=True)
+            if not status.get(step):
+                _mark(slug, step)
         else:
-            # CPU-only (easyocr); ~1h per half at the default crop budget.
-            _run(slug, step, ["src.jersey_ocr", "--match", slug,
-                              "--half", str(period)])
+            # Qwen2-VL reader (GPU, ~10 min/half) — reads 5-15x more
+            # confident numbers than easyocr and feeds the demoted-seed
+            # propagation path (easyocr files must NOT: measured rho
+            # reversal). An existing easyocr file is upgraded in place.
+            _run(slug, step, ["src.jersey_vlm", "--match", slug,
+                              "--half", str(period), "--force"])
 
     if status.get("score_ocr"):
         print(f"[{slug}] score_ocr: done - skip", flush=True)
@@ -128,8 +141,12 @@ def process_match(slug: str, home_team: int, pnl_stride: int = 3,
         _run(slug, "score_ocr", ["src.score_ocr", "--match", slug,
                                  "--home_team", str(home_team)])
 
-    # Events + report are cheap — always rebuilt so they reflect the latest
-    # event logic.
+    # ReID + events + report are always rebuilt so they reflect the latest
+    # jersey/identity state (reid.npz must cover the CURRENT anchor set —
+    # a stale cache silently drops cross-cut links).
+    for period in (1, 2):
+        _run(slug, f"reid_p{period}", ["src.reid", "--match", slug,
+                                       "--half", str(period), "--force"])
     _run(slug, "events", ["src.events", "--match", slug])
     _run(slug, "report", ["src.report", "--match", slug])
     print(f"[{slug}] MATCH COMPLETE", flush=True)
