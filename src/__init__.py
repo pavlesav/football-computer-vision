@@ -20,7 +20,6 @@ def __getattr__(name):
         "detect_period_starts": ".broadcast",
         "read_clock_seconds": ".broadcast",
         "validate_period_starts": ".broadcast",
-        "estimate_homography": ".homography",
         "GameState": ".game_state",
         "track_ball": ".ball_tracker",
         "BallTrackerParams": ".ball_tracker",

@@ -37,7 +37,6 @@ football-computer-vision/
 │   ├── broadcast.py                   # Camera cut detection, period detection via clock OCR
 │   ├── camera_motion.py               # Optical-flow tracker: propagates homography across PnLCalib dropouts
 │   ├── manual_calibration.py          # Landmark / drag-line / line-adjust GT widgets + saved homography seeds
-│   ├── homography.py                  # Classical pitch line detection (legacy, not primary)
 │   ├── visualization.py               # Annotator: ellipses, triangles, bboxes
 │   ├── video_utils.py                 # Video I/O, clip extraction (ffmpeg)
 │   ├── dataset.py                     # Training data management, train/val split
@@ -64,7 +63,8 @@ football-computer-vision/
 │   ├── identity_propagation.py        # Spreads identity anchors (human + jersey metas) via kinematic handoffs + ReID cross-cut links
 │   ├── jersey_vlm.py                  # Qwen2-VL-2B shirt-number reader (17ms/crop) — drop-in replacement for easyocr, same gates/schema
 │   ├── team_cluster.py                # Unsupervised team assignment from reid.npz (96.3% agreement vs human labels) + conservative --apply repair
-│   ├── verify_ui.py                   # DEFAULT human loop: verify auto identities + name the rest (5-10 min/half) → --apply → identities JSON
+│   ├── verify_ui.py                   # DEFAULT human loop: verify auto identities + name the rest (5-10 min/half; --clips adds cropped MP4 per card) → --apply
+│   ├── track_split.py                 # Splits ID-swapped tracks at VLM-read conflict boundaries (the SoccerNet-GSR split step)
 │   └── sofa_eval.py                   # SofaScore ground-truth scorecard (team tier + --players player tier + XI coverage)
 ├── models/                            # All models and weights
 │   ├── detection/                     # Fine-tuned YOLOv8m (weights + training artifacts)
@@ -220,7 +220,7 @@ from src.broadcast import (
 
 Maps image pixels to pitch coordinates (meters on a 105x68m FIFA-standard pitch). Uses **PnLCalib**, a pretrained HRNet-based encoder-decoder that detects keypoints and lines on the pitch, then estimates full camera parameters (3x4 projection matrix).
 
-**Why PnLCalib over classical approach:** The classical pipeline in `src/homography.py` (Hough lines + line classification) was tested on 5 matches × 3 frames = 15 frames and produced 0 visually correct results — even when reprojection error was low, projected player positions were wrong. Fundamental limitations: Hough transform fragments curves (center circle, penalty arcs) into noise, and line identification heuristics fail without clear perpendicular line structure. A pretrained model was chosen instead.
+**Why PnLCalib over classical approach:** A classical Hough-line pipeline was tested on 5 matches × 3 frames = 15 frames and produced 0 visually correct results — even when reprojection error was low, projected player positions were wrong (Hough fragments curves into noise; line-identification heuristics fail without clear perpendicular structure). The module was deleted 2026-07-12 (recoverable from git history); PnLCalib is the only homography path.
 
 **Model comparison (tested on 5 diverse frames):**
 | Model | Success rate | Notes |
@@ -288,7 +288,6 @@ python -m src.run_pnlcalib_video --match dec-mla --no_flow --no_manual_seeds
 
 **Runner fallback chain per frame:** PnLCalib -> sanity checks -> (optical-flow propagate if trail alive) -> (nearest manual seed if any) -> ProjectionSmoother stale hold (up to 3s). Stats breakdown printed at the end splits frames into PnLCalib-success / flow-carry / manual-seed / stale-hold / no-projection.
 
-**Classical pipeline (`src/homography.py`) is retained** but no longer the primary approach. It may be useful as a fallback or for debugging, but should not be relied on for production results.
 
 ## Demo Video Pipeline (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)
 
@@ -616,9 +615,30 @@ proof match is sut-pet: attribution 5%→53%, rho −0.25→+0.40. Components, a
   `--players` (player tier pooled: rho / recall / attribution / XI coverage). Every identity
   change is judged here; run with `PYTHONUTF8=1` on Windows.
 
+- **`src/track_split.py`** — the SoccerNet-GSR tracklet-SPLIT step: a track whose VLM
+  reads form two consistent runs of different numbers provably swapped players; split
+  at the run boundary, reads reassigned per fragment (396 proven swaps across 14
+  halves; pooled recall 56→59.1%, attribution 59→62.1%). Backup:
+  `players.pre_split.parquet` per half. NOT yet called by run_match — decide placement
+  (after jersey, before reid) when the next fresh match runs.
+- **`jersey_ocr` #1-gate** — confident jersey #1 claims are vetoed (measured VLM
+  misread of outfield partial digits; real #1s are GKs, identified by roles).
+
 Standard rebuild chain after ANY identity-layer change:
-`jersey_ocr --revote` (if gates changed) → `reid --force` (if anchors changed) →
-`events --match X` → `sofa_eval --players`.
+`track_split --apply` (if reads changed) → `jersey_ocr --revote` (if gates changed) →
+`reid --force` (if anchors changed) → `events --match X` → `sofa_eval --players`.
+
+**State as of 2026-07-12** (pooled, 7 SofaScore truth matches): possession err 4.2pp,
+pass-split err 3.9pp (team tier = production). Player tier: attribution 62.1%, pass
+recall 59.1%, XI coverage ~76%, rho 0.42 (post-split; one verify pass over the
+post-split state recaptures the rho the split temporarily diluted). Per-match rho
+peaks: jez-jed 0.71-0.74, dec-mla ~0.7, sut-mla ~0.65. jed-ars + mla-bud-2 are
+homography-coverage-bound (24-46% trusted), NOT identity-bound — the PnLCalib
+night-game fine-tune (57 manual-calibration GT files exist as seed; needs ~200-400
+night-frame labels via the line-adjust widget + 1-2 GPU-days training) is the last
+big lever. Human cost per match: ~10h unattended GPU + ~20-30 min verification
+(delegable; the verify pages can also be reviewed by a vision model via
+`scripts/export_verify_crops.py` contact sheets).
 
 ## Dataset Conventions
 
