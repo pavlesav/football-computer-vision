@@ -629,16 +629,17 @@ Standard rebuild chain after ANY identity-layer change:
 `reid --force` (if anchors changed) → `events --match X` → `sofa_eval --players`.
 
 **State as of 2026-07-12** (pooled, 7 SofaScore truth matches): possession err 4.2pp,
-pass-split err 3.9pp (team tier = production). Player tier: attribution 62.1%, pass
-recall 59.1%, XI coverage ~76%, rho 0.42 (post-split; one verify pass over the
-post-split state recaptures the rho the split temporarily diluted). Per-match rho
-peaks: jez-jed 0.71-0.74, dec-mla ~0.7, sut-mla ~0.65. jed-ars + mla-bud-2 are
-homography-coverage-bound (24-46% trusted), NOT identity-bound — the PnLCalib
-night-game fine-tune (57 manual-calibration GT files exist as seed; needs ~200-400
-night-frame labels via the line-adjust widget + 1-2 GPU-days training) is the last
-big lever. Human cost per match: ~10h unattended GPU + ~20-30 min verification
-(delegable; the verify pages can also be reviewed by a vision model via
-`scripts/export_verify_crops.py` contact sheets).
+pass-split err 3.9pp (team tier = production). Player tier: attribution 62.0%, pass
+recall 59.5%, XI coverage 157/210, rho 0.413 — rho sits stably in the 0.41-0.44 band
+and a post-split re-verify did NOT lift it: the residual rho drag is STRUCTURAL
+(correct-but-thin players under partial homography coverage), so do not chase it with
+more re-review of already-reviewed halves. Per-match rho peaks: dec-mla/jez-jed ~0.7,
+sut-mla ~0.64. jed-ars + mla-bud-2 are homography-coverage-bound (24-46% trusted),
+NOT identity-bound — the PnLCalib night-game fine-tune (57 manual-calibration GT
+files exist as seed; needs ~200-400 night-frame labels via the line-adjust widget +
+1-2 GPU-days training) is the last big lever. Human cost per match: ~10h unattended
+GPU + ~20-30 min verification (delegable; the verify pages can also be reviewed by a
+vision model via `scripts/export_verify_crops.py` contact sheets).
 
 ## Dataset Conventions
 
