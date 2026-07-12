@@ -41,7 +41,11 @@ from .game_state import GameState, available_periods, game_state_dir
 from .jersey_ocr import jersey_path
 
 MIN_RUN_READS = 2      # a run must have this many consistent reads to count
-SPLIT_ID_BASE = 900000  # new fragment ids start above any real BoT-SORT id
+# Fragment ids must stay above real BoT-SORT ids (~60k) and BELOW the export
+# id spaces they could collide with after period-2 namespacing (+100000):
+# jersey ids live at 800000-801999 and GK ids at 990000+. 900000 keeps p1
+# fragments (900000+k) and p2 fragments (1000000+k after ns) unique.
+SPLIT_ID_BASE = 900000
 
 
 def _runs(reads: list) -> list:

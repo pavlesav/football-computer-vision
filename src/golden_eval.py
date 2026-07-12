@@ -48,7 +48,30 @@ def load_golden(slug: str, period: Optional[int] = None) -> list[dict]:
     return out
 
 
-def score_passes(events, golden_docs) -> dict:
+def split_parent_map(slug: str, period: int) -> dict:
+    """{fragment_tid: original_tid} from track_split's log (stored on the
+    jersey payload). Golden labels reference PRE-split track ids, so scoring
+    must canonicalize detected ids back to their parents — otherwise every
+    split that crosses a golden segment reads as a spurious FN+FP pair."""
+    from .jersey_ocr import jersey_path
+    p = jersey_path(slug, period)
+    if not p.exists():
+        return {}
+    d = json.loads(p.read_text(encoding="utf-8"))
+    out = {}
+    for parent, seg_ids in (d.get("params", {}).get("track_split", {})
+                            .get("splits", {})).items():
+        for sid in seg_ids:
+            out[int(sid)] = int(parent)
+    return out
+
+
+def score_passes(events, golden_docs, canon=None) -> dict:
+    canon = canon or (lambda t: t)
+
+    def c(t):
+        return canon(int(t)) if t is not None else None
+
     sys_passes = [e for e in events if e.type == "Pass"]
     results = {"tp": [], "fn": [], "fp": [], "n_golden": 0}
 
@@ -65,10 +88,10 @@ def score_passes(events, golden_docs) -> dict:
                         continue
                     if abs(e.frame - g["kick"]) > TOL_FRAMES:
                         continue
-                    if e.player != g["from"]:
+                    if c(e.player) != g["from"]:
                         continue
                     if g["outcome"] == "complete" and g["to"] is not None \
-                            and e.details.get("recipient") != g["to"]:
+                            and c(e.details.get("recipient")) != g["to"]:
                         continue
                     found = i
                     break
@@ -93,9 +116,10 @@ def score_passes(events, golden_docs) -> dict:
     return results
 
 
-def score_carrier(gs, golden_docs, ball=None) -> dict:
+def score_carrier(gs, golden_docs, ball=None, canon=None) -> dict:
     """Frame-level carrier accuracy on labeled control intervals."""
     from .events import ball_series, carrier_per_frame
+    canon = canon or (lambda t: t)
     b = ball if ball is not None else ball_series(gs)
     carrier = carrier_per_frame(gs, b)
     tot = hit = wrong = missing = 0
@@ -107,7 +131,7 @@ def score_carrier(gs, golden_docs, ball=None) -> dict:
                     got = carrier.get(f)
                     if got is None:
                         missing += 1
-                    elif got[0] == c["tid"]:
+                    elif canon(int(got[0])) == c["tid"]:
                         hit += 1
                     else:
                         wrong += 1
@@ -128,7 +152,13 @@ def main():
     golden = load_golden(args.match, period=args.half)
     events, _ = detect_events(gs)
 
-    r = score_passes(events, golden)
+    parents = split_parent_map(args.match, args.half)
+    canon = (lambda t: parents.get(int(t), int(t))) if parents else None
+    if parents:
+        print(f"(split-aware: {len(parents)} fragment ids canonicalized "
+              f"to their pre-split parents)")
+
+    r = score_passes(events, golden, canon=canon)
     tp, fp, fn = len(r["tp"]), len(r["fp"]), len(r["fn"])
     unv = len(r.get("unverifiable", []))
     prec = tp / max(tp + fp, 1)
@@ -143,7 +173,7 @@ def main():
         print(f"  FP {name}: f{e.frame} {e.player}->"
               f"{e.details.get('recipient')} ({e.details.get('outcome')})")
 
-    c = score_carrier(gs, golden)
+    c = score_carrier(gs, golden, canon=canon)
     print(f"carrier: coverage {c['coverage']*100:.0f}% of labeled control frames, "
           f"accuracy-when-assigned {c['acc_when_assigned']*100:.0f}% "
           f"(correct {c['correct']} wrong {c['wrong']} unassigned {c['unassigned']})")

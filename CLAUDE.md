@@ -508,7 +508,7 @@ whenever two metas of the same (team, period) claim the same number. Writes
 integration (`events.py: resolve_player`): a confident meta resolves to
 `{id: 800000+team*1000+number, name: "#N", jersey_number: N}` — period-independent, so
 the SAME id aggregates a player's stats across both halves. Priority order: named
-identity file > goalkeeper (900000 base) > jersey number > consolidated meta id > raw
+identity file > goalkeeper (990000 base) > jersey number > consolidated meta id > raw
 track id.
 
 **Two extraction passes, both on sut-mla p1+p2 and bok-jed p1 (2026-07-03):**

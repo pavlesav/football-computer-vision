@@ -857,7 +857,12 @@ def _sb_records_for_period(events: list[Event], slug: str, summary: dict,
     # signal (P(same-player pair closer) = 0.43, i.e. chance). Jersey-number
     # OCR (:mod:`src.jersey_ocr`) is the outfield path: same team + same
     # confidently-read shirt number in both halves = same player.
-    GK_ID_BASE = 900000
+    # GK base must stay clear of every other id space: raw/meta track ids
+    # (p1 < ~100k), period-2 namespaced ids (+100000), jersey ids
+    # (800000-801999), and track_split fragment ids (900000+, which in p1
+    # export unchanged — 990000 was chosen AFTER fragment ids 900000/900001
+    # were found colliding with the old GK base of 900000).
+    GK_ID_BASE = 990000
     JERSEY_ID_BASE = 800000
 
     def resolve_player(tid: int) -> dict:

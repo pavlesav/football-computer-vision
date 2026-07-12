@@ -257,6 +257,27 @@ cheap gate: veto #N=1 claims on non-GK-role groups).
   front of the frame strip — humans resolve shirt numbers and spot ID
   swaps far better on motion than on static crops.
 
+### Update 2026-07-12 — process audit (one real bug found and fixed; split exonerated)
+
+A full self-audit of the week's changes found and fixed one genuine bug:
+**split fragment track ids started at 900000 — the same value as the
+goalkeeper export-id base** — so an unidentified period-1 fragment with tid
+900000/900001 shared an export id with `goalkeeper-t0/t1` (player-tier eval
+and team stats were unaffected; per-player aggregates in the merged JSON
+could mix a stray fragment into a GK's row). Fixed by moving `GK_ID_BASE`
+to 990000; all exports rebuilt; verified zero id overlap and bit-identical
+pooled metrics.
+
+The audit also **exonerated the tracklet split on event detection**: the
+apparent golden regression (P 0.68/R 0.81 vs the documented 0.79/0.94) was
+entirely the eval's stale pre-split track ids reading correct passes as
+FN+FP pairs. `golden_eval` is now split-aware (fragments canonicalize to
+their parents via the split log); with that fix sut-mla scores **exactly
+its documented baseline — P 0.79 / R 0.94, carrier 98%** — and the unsplit
+control (bud-sut) stays perfect. Lesson recorded: any change that renames
+track ids must ship with id-canonicalization in every evaluator that holds
+labels by track id.
+
 ## The two levers that matter, ranked
 
 1. **Homography coverage** — lifts team-level recall *and* every downstream
