@@ -106,6 +106,14 @@ MAX_KICK_JUMP_M = 5.0
 STICKY_LINE_M = 0.4           # ball within this of a line (or beyond) ...
 STICKY_MAX_SPEED = 5.0        # ... and slower than this ...
 STICKY_FRAMES = 6             # ... for this many estimates ⇒ dead (restart setup)
+# In-play stoppage trigger (golden segJ, jez-jed FK setup): a ball parked
+# ANYWHERE for several seconds is a foul/free-kick/kickoff being set up —
+# live play never parks the ball this long. Without this the carrier logic
+# oscillates between the players standing around the spot and mints pass
+# chains (28 FPs in one 50 s window, measured).
+STATIONARY_DRIFT_M = 1.2      # detected positions stay this close to anchor
+STATIONARY_MIN_S = 4.0        # parked at least this long ⇒ dead until it moves
+STATIONARY_MAX_GAP_S = 2.0    # missed-detection/excursion gap tolerated in a run
 MIN_DEAD_RUN_FRAMES = 30      # sticky-triggered dead runs shorter than this
                               # (1.2 s) are homography flicker, not a restart
                               # — a real out-to-restart cycle takes seconds
@@ -164,18 +172,75 @@ def ball_series(gs: GameState, conf_min: Optional[float] = None) -> pd.DataFrame
 
 # ── Possession / carrier ─────────────────────────────────────────────────────
 
+def _stationary_spans(ball: pd.DataFrame, fps: float = 25.0) -> set:
+    """Frames inside a parked-ball run: DETECTED, in-bounds ball positions
+    stay within STATIONARY_DRIFT_M of a positional anchor for at least
+    STATIONARY_MIN_S — an in-play stoppage (foul aftermath, free-kick or
+    kickoff setup). Works on raw detected positions against an anchor, NOT
+    on the KF series' speed: a persistent false static candidate makes the
+    tracker oscillate between blobs 40 m apart, so the series shows phantom
+    speed while the real ball sits parked (measured on the jez-jed golden
+    FK segment). Interruptions (missed detections, tracker excursions to
+    the false blob) shorter than STATIONARY_MAX_GAP_S don't break the run;
+    the kick that ends the stoppage moves the ball off-anchor and closes
+    it, so the restart itself is never suppressed."""
+    dead = set()
+    max_gap = STATIONARY_MAX_GAP_S * fps
+    # Concurrent anchor runs keyed by 2 m grid cell: the tracker alternates
+    # between candidates during a stoppage, so a single rolling anchor never
+    # survives — each spatial anchor instead keeps its own run and extends
+    # whenever the tracker returns to it.
+    runs = {}                   # cell -> [ax, ay, f_start, last_ok]
+
+    def flush(run):
+        if run[3] - run[2] >= STATIONARY_MIN_S * fps:
+            dead.update(range(int(run[2]), int(run[3]) + 1))
+
+    for r in ball.itertuples(index=False):
+        if not (r.bx == r.bx) or getattr(r, "source", "detected") != "detected":
+            continue
+        if not ((-1.0 < r.bx < PITCH_L + 1.0)
+                and (-1.0 < r.by < PITCH_W + 1.0)):
+            continue
+        f = int(r.frame)
+        cell = (int(r.bx // 2), int(r.by // 2))
+        hit = None
+        for cx in (cell[0] - 1, cell[0], cell[0] + 1):
+            for cy in (cell[1] - 1, cell[1], cell[1] + 1):
+                run = runs.get((cx, cy))
+                if run is None:
+                    continue
+                if f - run[3] > max_gap:
+                    flush(run)
+                    del runs[(cx, cy)]
+                    continue
+                if np.hypot(r.bx - run[0], r.by - run[1]) \
+                        <= STATIONARY_DRIFT_M:
+                    hit = run
+        if hit is not None:
+            hit[3] = f
+        else:
+            runs[cell] = [r.bx, r.by, f, f]
+    for run in runs.values():
+        flush(run)
+    return dead
+
+
 def dead_ball_frames(ball: pd.DataFrame) -> set:
     """Frames where the ball is out of play: from the moment it crosses the
     pitch boundary until it has been back in bounds for DEAD_BALL_COOLDOWN
     (the restart). Shared by carrier assignment AND kick detection — kicks
     minted during throw-in retrieval fabricated passes (golden segA).
 
-    Two triggers:
-      * position beyond the boundary margin (the original rule), and
+    Three triggers:
+      * position beyond the boundary margin (the original rule),
       * a slow ball parked ON the line for STICKY_FRAMES — a restart being
         set up. Homography error near the touchline keeps a genuinely-out
         ball's estimate marginally inside (the sut-mla thrower's ball sat
-        0.1 m inside), so crossing alone under-triggers.
+        0.1 m inside), so crossing alone under-triggers, and
+      * a ball parked anywhere for STATIONARY_MIN_S (in-play stoppage —
+        the golden jez-jed FK segment measured 28 fabricated passes in one
+        such 37 s setup phase).
     """
     dead = set()
     dead_state = False
@@ -218,6 +283,7 @@ def dead_ball_frames(ball: pd.DataFrame) -> set:
                 back_in_since = None
         if dead_state:
             dead.add(f)
+    dead |= _stationary_spans(ball)
     return dead
 
 

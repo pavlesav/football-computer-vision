@@ -1,0 +1,25 @@
+{
+  "slug": "jez-jed",
+  "period": 1,
+  "notes": "Free-kick segment (43:45-44:35 match clock, frames 72996-74246). Labeled from track-id contact sheets (step 10) by vision-model review, 2026-07-13. Jezero = blue kits = team0 (yellow boxes), Jedinstvo = white = team1 (blue boxes). Window opens on a stoppage (foul aftermath, fallen Jezero player) and holds a ~37s dead-ball phase: white 36067 hands the ball over, blue 36128 carries and places it, long wall-organizing theater, kick finally at ~f73922 by 36128. The dead phase is deliberately NOT covered by unknown_spans so any pass the system fabricates there scores as FP - this segment measures the restart-overdetection error class. A persistent FALSE ball detection sits at the far-left track edge from ~f73746 to ~f74016 (static magenta blob) - useful for ball-tracker FP work. High trusted homography (91%) and dense ball detections throughout.",
+  "segments": [
+    {
+      "name": "segJ_jezjed_44min_FK",
+      "f_start": 72996,
+      "f_end": 74246,
+      "control": [
+        {"tid": 36067, "team": 1, "f0": 73086, "f1": 73115, "note": "white player holds/hands the ball over for Jezero's free kick (dead ball in hands)"},
+        {"tid": 36128, "team": 0, "f0": 73130, "f1": 73250, "note": "blue 17 carries the ball to the FK spot and places it (dead)"},
+        {"tid": 36299, "team": 1, "f0": 74040, "f1": 74098, "note": "controls the headed clearance outside the box, walks it, then clears long upfield"}
+      ],
+      "unknown_spans": [
+        {"f0": 73926, "f1": 74038, "note": "FK flight into the box + aerial contest + scramble, headed clear - no readable control"},
+        {"f0": 74100, "f1": 74246, "note": "long clearance drops contested at midfield, camera pans, no sustained control to window end"}
+      ],
+      "passes": [
+        {"kick": 73922, "recv": null, "from": 36128, "to": null, "outcome": "incomplete", "note": "free kick lofted into the box, headed clear by the defense (clearer id not readable in the scramble)"},
+        {"kick": 74098, "recv": null, "from": 36299, "to": null, "outcome": "incomplete", "note": "long clearance upfield, drops contested at midfield, no clean receiver inside the window"}
+      ]
+    }
+  ]
+}
