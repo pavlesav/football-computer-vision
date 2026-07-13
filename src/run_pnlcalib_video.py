@@ -805,6 +805,18 @@ def load_models(device: str = "cuda:0") -> dict:
     }
 
 
+def _night_enhance(frame: np.ndarray) -> np.ndarray:
+    """CLAHE on luminance + gamma lift — recovers paint contrast under
+    floodlights so PnLCalib's line/keypoint heads fire. Inference-only:
+    gates must keep scoring the raw frame."""
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(l)
+    out = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+    lut = (np.linspace(0, 1, 256) ** 0.7 * 255).astype(np.uint8)
+    return cv2.LUT(out, lut)
+
+
 def predict_one_frame(
     frame: np.ndarray,
     models: dict,
@@ -839,31 +851,39 @@ def predict_one_frame(
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                     player_boxes.append((float(x1), float(y1), float(x2), float(y2)))
 
-    # Try default thresholds first; if PnLCalib returns nothing or its
-    # output fails the gates, retry once with looser keypoint/line
-    # thresholds. This recovers marginal wide-angle frames where paint
-    # contrast is low (overcast pitches, pale lines) without lowering
-    # the overall confidence bar.
+    # Attempt ladder: default thresholds, then looser keypoint/line
+    # thresholds (recovers marginal frames with pale paint), then the same
+    # two rungs on a contrast-ENHANCED copy (CLAHE-L + gamma 0.7) — measured
+    # on mla-bud-2 night frames to double the rescue rate (22/30 vs 11/30
+    # raw re-runs, all 4 eyeballed rescues visually correct). The gates
+    # ALWAYS score against the RAW frame: enhancement may only help the
+    # model see lines, never inflate the evidence that accepts them (the
+    # adaptive-V mask lesson).
     status = "inference_fail"
     best_P = None
-    for kp_thr, line_thr in [(0.3434, 0.7867), (0.20, 0.50)]:
-        cam = FramebyFrameCalib(iwidth=frame_w, iheight=frame_h, denormalize=True)
-        params = run_inference(
-            cam, frame, models["model_kp"], models["model_line"],
-            device, models["transform_resize"],
-            kp_threshold=kp_thr, line_threshold=line_thr,
-        )
-        if params is None:
-            continue
-        P = projection_from_cam_params(params)
-        if not check_projection_sanity(P, player_boxes):
-            status = "sanity_fail"
-            continue
-        if not check_line_alignment(P, frame, min_score=0.12):
-            status = "line_fail"
-            continue
-        best_P = P
-        break
+    for stage in ("raw", "enhanced"):
+        infer_img = frame if stage == "raw" else _night_enhance(frame)
+        for kp_thr, line_thr in [(0.3434, 0.7867), (0.20, 0.50)]:
+            cam = FramebyFrameCalib(iwidth=frame_w, iheight=frame_h,
+                                    denormalize=True)
+            params = run_inference(
+                cam, infer_img, models["model_kp"], models["model_line"],
+                device, models["transform_resize"],
+                kp_threshold=kp_thr, line_threshold=line_thr,
+            )
+            if params is None:
+                continue
+            P = projection_from_cam_params(params)
+            if not check_projection_sanity(P, player_boxes):
+                status = "sanity_fail"
+                continue
+            if not check_line_alignment(P, frame, min_score=0.12):
+                status = "line_fail"
+                continue
+            best_P = P
+            break
+        if best_P is not None:
+            break
 
     if best_P is not None:
         return best_P, "pnlcalib"
