@@ -1,302 +1,270 @@
 # Football Computer Vision
 
-Semi-automated event data extraction from broadcast football footage. The end goal is to produce match event data (passes, shots, possession) for every Montenegro First Division (1.CFL) game, with a human-in-the-loop workflow targeting 1-3 hours of correction per match.
+Match event data (passes, carries, possession, goals and who made them) extracted from
+single-feed broadcast video of Montenegro's First League (1.CFL), a league that no commercial
+data provider covers.
 
-## Pipeline Overview
+<p align="center">
+  <a href="docs/media/demo.mp4">
+    <img src="docs/media/demo.gif" width="820"
+         alt="Broadcast clip of FK Sutjeska vs OFK Mladost with tracked players, name and number badges, live speed, pitch-line overlay and a minimap">
+  </a>
+  <br><em>Sutjeska vs Mladost, 55'. Tracked players with names and shirt numbers, live speed,
+  the pitch model projected onto the broadcast, and a minimap of the camera's view.
+  <a href="docs/media/demo.mp4">Full 18-second clip (MP4)</a>. This clip uses
+  hand-calibrated homography keyframes and hand-mapped names; the match pipeline below runs
+  without them.</em>
+</p>
 
-The system processes a full-match broadcast video through a layered pipeline, where each layer builds on the previous:
+## At a glance
 
-```
-Full-match broadcast video
-    |
-    v
-[1. Broadcast Analysis]  -->  Game period boundaries (kickoff frames)
-    |
-    v
-[2. Detection + Tracking]  -->  Player/ball bounding boxes + persistent track IDs
-    |
-    v
-[3. Team Classification]  -->  Team A vs Team B labels per track
-    |
-    v
-[4. Pitch Homography]  -->  Pixel coordinates mapped to pitch coordinates (meters)
-    |
-    v
-[5. Game State]  -->  Persisted per-half artifact: players + ball + camera (Parquet)
-    |
-    v
-[6. Ball Tracking + Event Detection]  -->  Passes, carries, shots, possession per half
-    |
-    v
-[7. Match Assembly]  -->  Goal oracle (scoreboard OCR) + merged StatsBomb JSON + one-page report
-```
+The input is a full-match broadcast recording: one camera feed with pans, zooms, replays and
+close-ups, as produced for a small league. The output is a StatsBomb-v4-shaped event stream per
+match and a one-page analyst report. In between, a fine-tuned YOLOv8m detects players and the
+ball, BoT-SORT tracks them, a pretrained PnLCalib model calibrates the camera so image pixels
+map to pitch metres, and all of it is persisted once as a per-frame *game state* in Parquet.
+Everything downstream reads that artifact instead of the video; ball tracking, possession and
+events run on the CPU and iterate in seconds.
 
-### Current Status
+Measured against SofaScore on 7 full matches, team possession is within **4.0 percentage
+points** and the pass split between teams within **3.9 pp**; the final score, read from the
+broadcast's own scoreboard graphic, matched the real result on **7 of 7** matches. Passes are
+attributed to a named player automatically (VLM shirt-number reading plus appearance
+re-identification) for **61% of pass events**, with a 20-30 minute human verification pass per
+match to confirm or reject the proposed identities.
 
-| Layer | Status | Details |
-|-------|--------|---------|
-| Broadcast Analysis | Done | Unsupervised period detection, 15/16 matches PASS |
-| Detection + Tracking | Done | YOLOv8m + BoT-SORT, mAP50=0.944 |
-| Team Classification | Done | ResNet18 + PCA + KNN (k=5), 16/16 matches labeled |
-| Pitch Homography | In Progress | PnLCalib v2 + optical-flow + manual seeds, 71% avg coverage; per-frame drift being diagnosed via GT loop |
-| Game State | Done | Cache-once perception artifact (Parquet): players + ball candidates + camera per frame |
-| Ball Tracking | Done | Pitch-space Kalman filter + hindsight gap bridging; tuned via masked-detection eval |
-| Event Detection | Working | Golden-measured on 27 passes / 3 matches: combined precision 0.83 / recall 0.89 (Tier-1); restart passes + play_pattern; StatsBomb-v4-shaped export, attack-normalized |
-| Roles & Identity | Working | Attack direction + GK possession integrated; track→meta-track consolidation + naming widget → named exports |
-| Jersey-Number OCR | First version | Shirt-number OCR → period-independent `#N` id; zero wrong answers / zero uniqueness violations on 13 hand-labeled tracks, one cross-half match visually confirmed, but coverage is sparse (easyocr-recall-limited, ~20/1300+ metas per half) |
-| Goal Oracle | Done | Scoreboard score-digit OCR → certain goals; sut-mla goal anchored within ~1 s of the pixel-verified moment |
-| First Complete Match | **Done** | sut-mla both halves: 1,434 events, 877 passes, possession 54/46, goals 1-0 (matches real result); merged SB JSON + one-page report |
-| Demo Video | Done | Demo clip renderer with tracked players, names, speed/distance, minimap (`04_demo_video.ipynb`) |
-
-## Project Structure
-
-```
-football-computer-vision/
-├── src/                               # All Python source code
-│   ├── __init__.py                    # Lazy imports for all modules
-│   ├── config.py                      # All paths, thresholds, hyperparameters
-│   ├── detection.py                   # PlayerDetector (YOLO), BallInterpolator
-│   ├── segmentation.py                # YOLOv8-seg masks, ResNet18 CNN embeddings
-│   ├── team_classifier.py             # TeamClassifier: PCA + KNN (k=5) supervised classification
-│   ├── tracking.py                    # Tracker: track-level team assignment
-│   ├── broadcast.py                   # Camera cut detection, period detection via clock OCR
-│   ├── camera_motion.py               # Optical-flow propagation across PnLCalib dropouts
-│   ├── manual_calibration.py          # Landmark / drag-line / line-adjust GT widgets + saved seeds
-│   ├── homography.py                  # Classical pitch line detection (legacy, not primary)
-│   ├── visualization.py               # Annotator: ellipses, triangles, bboxes
-│   ├── video_utils.py                 # Video I/O, clip extraction (ffmpeg)
-│   ├── dataset.py                     # Training data management, train/val split
-│   ├── run_pnlcalib_video.py          # PnLCalib homography on video clips
-│   ├── run_demo.py                    # Demo clip renderer (legacy showcase): tracking + names + speed/distance + minimap
-│   ├── game_state.py                  # Persisted per-frame game-state artifact (Parquet, per half)
-│   ├── pipeline.py                    # PerceptionPipeline: perception once → output/game_state/{slug}/p{N}/
-│   ├── ball_tracker.py                # Pitch-space Kalman ball tracker (analysis-side, no GPU)
-│   ├── events.py                      # Possession/kicks → touches → spells → per-half + merged match SB JSON
-│   ├── score_ocr.py                   # Scoreboard goal-oracle: score-digit OCR → certain goals
-│   ├── report.py                      # One-page match report (mplsoccer) from the merged SB JSON
-│   ├── roles.py                       # Attack directions + goalkeeper identification (positional)
-│   ├── identity.py                    # Track consolidation + naming widget → real player names in exports
-│   ├── jersey_ocr.py                  # Shirt-number OCR → period-independent #N identity for cross-half stats
-│   ├── stabilize.py                   # Offline homography smoothing (removes overlay jitter)
-│   ├── golden_eval.py                 # Precision/recall vs hand-labeled golden event set
-│   ├── team_repair.py                 # Kit-hue audit of team labels (flags ID-swap suspects)
-│   └── render_game_state.py           # Annotated review MP4 rendered from the artifact (QC / judging tool)
-├── models/                            # All models and weights
-│   ├── detection/weights/best.pt      # Fine-tuned YOLOv8m
-│   ├── segmentation/yolov8n-seg.pt    # Instance seg for team classification
-│   ├── pitch_keypoints/               # Soccana YOLOv11 keypoint model (backup)
-│   └── pnlcalib/                      # PnLCalib — primary homography model (gitignored, ~640MB)
-├── data/
-│   ├── period_detection_results.json  # Cached period boundaries for all 16 matches
-│   ├── manual_calibration/            # {slug}_frame_{N:07d}.json — manual homography seeds
-│   └── object_detection/              # Labeled training data for YOLO fine-tuning
-│       ├── data.yaml                  # YOLO dataset config (2 classes)
-│       ├── images/{all,train,val}/    # 971 annotated frames across 16 matches
-│       └── labels/{all,train,val}/    # YOLO-format labels (class cx cy w h)
-├── notebooks/
-│   ├── 01_team_classification.ipynb   # Per-game labeling widget → KNN classifier + review + validation
-│   ├── 02_homography.ipynb            # Homography visualization + model comparison
-│   ├── 03_event_detection.ipynb       # Game state → ball-track QC → events → pass map + export
-│   ├── 04_demo_video.ipynb            # Demo render + label/calibrate/compare iteration loop
-│   └── detection_training.ipynb       # YOLO training + error analysis
-├── videos/                            # Source match videos (gitignored)
-├── output/                            # All generated outputs (gitignored)
-│   ├── classifiers/                   # Per-game classifier.pkl + labels.npz + pass1.pkl
-│   ├── classifier_validation/         # Annotated 2-min clips for visual QC
-│   ├── demo/                          # Demo MP4s (full clip + discover-mode track-ID clip)
-│   ├── game_state/{slug}/p{1,2}/      # players/frames/ball parquet + embeddings.npz + jersey_numbers.json + meta.json per half
-│   ├── events/                        # {slug}_events.json (match) + {slug}_p{N}_events.json + goal oracle
-│   ├── reports/{slug}/                # One-page match report PNG
-│   └── qc/{slug}/                     # Visual QC renders (homography, ball track, pass events)
-├── requirements.txt
-├── CLAUDE.md                          # Detailed project guide for AI assistants
-└── README.md
+```mermaid
+flowchart LR
+    V["Broadcast video<br/>(full match)"] --> B["Period detection<br/>clock OCR"]
+    B --> P
+    subgraph P["Perception (GPU, once per half)"]
+        direction TB
+        D["YOLOv8m detection<br/>+ BoT-SORT tracking"] --> H["Camera calibration<br/>PnLCalib + optical flow"]
+        H --> T["Team classification<br/>ResNet18 + KNN"]
+    end
+    P --> G[("Game state<br/>Parquet per half")]
+    G --> K["Pitch-space Kalman<br/>ball tracker"]
+    K --> E["Possession, kicks,<br/>touches, spells"]
+    E --> X["StatsBomb-shaped<br/>event JSON"]
+    G --> I["Player identity<br/>VLM shirt numbers + OSNet ReID"]
+    I --> X
+    V --> O["Scoreboard OCR<br/>goal oracle"]
+    O --> X
+    X --> R["Match report"]
 ```
 
-## Layer Details
+## What it produces
 
-### 1. Broadcast Analysis (`src/broadcast.py`)
+For every processed match: `output/events/{slug}_events.json`, a StatsBomb-v4-shaped event stream
+(passes with length, angle and outcome, carries, ball receipts, recoveries, restarts with
+`play_pattern`, goals, possession sequences, attack-normalised 120x80 locations plus native
+metres) and a one-page report rendered from it.
 
-Fully unsupervised segmentation of a broadcast into game periods.
+<p align="center">
+  <img src="docs/media/match_report.png" width="820"
+       alt="One-page match report for Sutjeska 1-0 Mladost: stats table, pass-volume momentum chart with the goal marked, pass maps for both teams, goal map and top passers">
+  <br><em>Report generated end to end from the broadcast. The 1-0 score and the 55th-minute goal
+  come from the scoreboard oracle; possession is within 2 pp and the pass split within 0 pp of
+  SofaScore for this match.</em>
+</p>
 
-- **Camera cut detection**: HSV histogram difference between consecutive frames with adaptive thresholding. Cut count varies widely by production (4 cuts for single-camera to 586 for multi-camera).
-- **Period detection**: OCR of the match clock via easyocr on 60 uniformly-sampled frames. Extrapolates kickoff times from clock readings: `clock < 40:00` maps to first half, `clock >= 50:00` maps to second half.
-- **Validation**: Sanity checks (both halves detected, 45-75 min gap, reasonable positions in broadcast). Tested on all 16 matches: 15 PASS, 1 WARN (ars-dec has a source video recording gap).
+## How it works
 
-### 2. Detection + Tracking (`src/detection.py`)
+1. **Period detection** ([broadcast.py](src/broadcast.py)). The match clock is OCR'd with easyocr
+   on 60 frames sampled across the broadcast and extrapolated back to the two kickoff frames.
+   Unsupervised; correct on 15 of 16 matches, and the 16th is flagged because its source
+   recording genuinely starts three minutes into the second half.
+2. **Detection and tracking** ([pipeline.py](src/pipeline.py), [detection.py](src/detection.py)).
+   YOLOv8m fine-tuned on 971 hand-labelled frames from all 16 matches (two classes, person and
+   ball), with BoT-SORT for persistent track ids.
+3. **Camera calibration** ([run_pnlcalib_video.py](src/run_pnlcalib_video.py),
+   [camera_motion.py](src/camera_motion.py), [stabilize.py](src/stabilize.py)). PnLCalib
+   (HRNetV2) predicts pitch keypoints and lines and returns a 3x4 projection matrix. Each
+   projection must pass a player-on-pitch sanity check and a line-alignment check against the
+   painted lines in the frame; Lucas-Kanade optical flow carries the calibration across frames
+   where the model fails, and an offline smoothing pass removes jitter. Frames only count as
+   *trusted* above a per-match confidence threshold, and events are only emitted on trusted
+   wide-shot frames.
+4. **Game state** ([game_state.py](src/game_state.py)). Per half, one row per player per frame
+   (bounding box, pitch coordinates, team), every raw ball candidate, and the camera matrix with
+   its confidence. Perception runs once (about 10 hours of GPU time per match); everything after
+   this point reads the Parquet files, not the video.
+5. **Ball tracking** ([ball_tracker.py](src/ball_tracker.py)). YOLO loses the ball on roughly 45%
+   of frames, mostly during passes. A constant-velocity Kalman filter in *pitch* coordinates
+   bridges those gaps: the camera pans to follow the ball, so image-space extrapolation is wrong
+   exactly when it is needed, while the ground track of a pass is close to a straight line. Gaps
+   bounded by detections at most 2.4 s apart are back-filled in hindsight.
+6. **Events** ([events.py](src/events.py)). A possession-then-event decision tree: ball carrier
+   per frame, explicit kick detection from ball-velocity discontinuities, debounced touches,
+   possession spells, then Pass / Carry / Shot / Ball Recovery at spell boundaries. Dead-ball
+   logic suppresses play from the moment the ball leaves the pitch, or parks, until the restart,
+   which is classified as a throw-in, corner or goal kick.
+7. **Goals** ([score_ocr.py](src/score_ocr.py)). Goals often happen on a close-up camera where
+   tracking is correctly paused, so they are read from the broadcast instead: the scoreboard is
+   sampled every 10 s, both of the league's graphic layouts are parsed, and each monotonic score
+   change becomes a goal anchored to the last reading of the old score (about 1 s after the ball
+   crosses the line on the verified case).
+8. **Player identity** ([jersey_vlm.py](src/jersey_vlm.py), [reid.py](src/reid.py),
+   [identity_propagation.py](src/identity_propagation.py), [track_split.py](src/track_split.py),
+   [team_cluster.py](src/team_cluster.py)). Every camera cut ends a track, so a half produces
+   hundreds of track fragments. Qwen2-VL-2B reads shirt numbers from back-of-shirt crops
+   (17 ms per crop on an RTX 5070), numbers are voted per track under structural consistency
+   gates, and OSNet appearance embeddings link a player's fragments across cuts. Tracks whose
+   number readings switch mid-life are split at the switch, since they are ID swaps. The same
+   embeddings, clustered, assign teams without any per-match labelling.
+9. **Human verification** ([verify_ui.py](src/verify_ui.py)). A self-contained HTML page per
+   half shows each proposed identity with crops and a short video clip from different fragments,
+   so a wrong merge is visible at a glance. The reviewer confirms (attaching the lineup name) or
+   rejects; rejections become vetoes the next rebuild respects. About 10 minutes per half.
 
-- **YOLOv8m** fine-tuned on 971 frames across 16 matches (2 classes: person, ball)
-- **BoT-SORT** tracking provides persistent IDs across frames
-- **Ball interpolation** fills detection gaps up to 15 frames via linear interpolation
-- Metrics: mAP50=0.944, mAP50-95=0.748, Precision=0.952, Recall=0.892
+`python -m src.run_match --match X --home_team N` runs the whole chain for one match and is
+resumable step by step.
 
-### 3. Team Classification (`src/team_classifier.py`, `src/segmentation.py`)
+## Evaluation
 
-One-time labeling per game (~15 min), then applied automatically to all subsequent processing.
+Three independent references, each measuring a different layer.
 
-1. YOLOv8n-seg produces per-player silhouette masks on the full frame
-2. Masked crops (background removed) fed to frozen ResNet18 for 512-dim embeddings
-3. PCA reduces 512 → 32 dims
-4. Human labels ~200 track crops per game (A/B/Other) in the notebook widget
-5. KNN (k=5) classifier trained on labeled embeddings in PCA space
-6. Classification is done at the **track level** — each track casts one vote per sampled embedding and the majority label wins, making it robust to brief ID swaps and noisy frames
+### Detection
 
-Three files are saved per game to `output/classifiers/`:
-- `{slug}_classifier.pkl` — fitted PCA + KNN model (loaded at inference time)
-- `{slug}_labels.npz` — labeled embeddings + labels (for refitting); also stores track-level review data for the review widget
-- `{slug}_pass1.pkl` — raw embeddings + best crops from Pass 1 (used by review and validation cells)
+YOLOv8m on three held-out matches (the train/validation split is by match, not by frame, so no
+game appears on both sides).
 
-**Review widget** (`01_team_classification.ipynb`): after labeling, shows all crops grouped by assigned team so mislabeled outliers are immediately visible. Corrections can be saved and the classifier refit in one click.
+| mAP50 | mAP50-95 | precision | recall |
+|---|---|---|---|
+| 0.944 | 0.748 | 0.952 | 0.892 |
 
-**Validation**: a 2-minute annotated clip per game is saved to `output/classifier_validation/` for visual QC — watch the output and check that team colors are consistent before moving to event detection.
+Training curves: [models/detection/results.png](models/detection/results.png).
 
-### 4. Pitch Homography (`src/run_pnlcalib_video.py`)
+### Events against a hand-labelled golden set
 
-Maps image pixels to pitch coordinates (meters on a 105x68m FIFA-standard pitch) using **PnLCalib**, a pretrained HRNet-based encoder-decoder that outputs a 3x4 camera projection matrix.
+Six segments where every ball contact was labelled frame by frame
+([data/golden_events/](data/golden_events/), scored by [golden_eval.py](src/golden_eval.py)).
+Two segments were chosen specifically because they are hard.
 
-**Post-processing pipeline (v2):**
-1. **Non-gameplay filtering** — Skip replays/close-ups via scoreboard edge density check
-2. **Player sanity check** — Reject projections where <50% of detected players land on pitch
-3. **Line alignment check** — Verify projected lines match visible white pixels in the frame
-4. **Temporal consistency** — Reject single-frame outliers; require 3 consecutive agreeing frames before accepting large projection changes
-5. **EMA smoothing** — Blend consecutive projections (alpha=0.3) for stability
+| segment | conditions | golden passes | precision | recall | carrier accuracy |
+|---|---|---|---|---|---|
+| sut-mla, 1st half (2 windows) | daylight, clear camera | 16 | 0.79 | 0.94 | 98% |
+| sut-mla, 2nd half | daylight, clear camera | 8 | 0.88 | 0.88 | 99% |
+| bud-sut, 1st half | daylight, multi-camera | 3 | 1.00 | 1.00 | 100% |
+| **good conditions, pooled** | | **27** | **0.83** | **0.93** | |
+| bok-jed, 1st half | partial calibration, crowded box | 3 | 0.00 | 0.00 | 53% |
+| jez-jed, 1st half | 37 s stoppage around a free kick | 2 | 0.00 | 0.00 | 43% |
 
-**Results across all 16 matches (60-second clips):**
+Where the camera is calibrated the event logic is accurate. The two failures have named causes:
+bok-jed loses whole possession intervals to untrusted calibration, and jez-jed exposed passes
+invented between players standing over a parked ball during a stoppage, which led to a
+parked-ball dead-time rule, and a static off-pitch false ball detection that the tracker
+oscillates towards (the next fix).
 
-| Tier | Matches | Coverage |
-|------|---------|----------|
-| Tier 1 (>80%) | jez-ars, dec-mla, jez-jed, sut-pet, sut-mla, mla-bud-2, jed-ars | 84-100% |
-| Tier 2 (60-80%) | pet-mor, pet-bok, bok-jed, bud-sut | 64-75% |
-| Tier 3 (<60%) | mor-bud, mor-ars, ars-dec | 10-43% |
+### Match level against SofaScore
 
-Average: **71.3%** coverage. Tier 3 failures are caused by night/dusk lighting, oblique camera angles, and running track stadiums — conditions outside PnLCalib's training distribution.
+Seven full matches ([sofa_eval.py](src/sofa_eval.py)). Possession and pass split are
+coverage-invariant: they compare shares, so they stay meaningful when only part of the match is
+calibrated. "Trusted" is the share of frames with a trusted camera calibration.
 
-```bash
-python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 60 --alpha 0.3
+| match | possession (SofaScore / ours) | error | pass split error | trusted |
+|---|---|---|---|---|
+| sut-mla | 45-55 / 47-53 | 2 pp | 0 pp | 66% |
+| jez-jed | 52-48 / 51-49 | 1 pp | 4 pp | 65% |
+| jez-ars | 44-56 / 49-51 | 5 pp | 5 pp | 71% |
+| dec-mla | 49-51 / 53-47 | 4 pp | 1 pp | 35% |
+| jed-ars | 64-36 / 55-45 | 9 pp | 10 pp | 46% |
+| mla-bud-2 | 51-49 / 53-47 | 2 pp | 1 pp | 25% |
+| sut-pet | 56-44 / 62-38 | 6 pp | 6 pp | 25% |
+| **mean** | | **4.0 pp** | **3.9 pp** | |
+
+Player level, pooled over the same seven matches: 61% of pass events are attributed to a
+numbered player, 153 of the 210 players in SofaScore's line-ups are identified, and per-player
+pass counts correlate with SofaScore at Spearman rho 0.43. The scoreboard oracle matched the final
+score on all seven. The full stage-by-stage history, including what was tried and reverted, is in
+[docs/CAPABILITY_ASSESSMENT.md](docs/CAPABILITY_ASSESSMENT.md).
+
+## Design decisions that came from measurement
+
+- **Classical homography was dropped.** A Hough-line pipeline scored well on reprojection error
+  and produced 0 of 15 visually correct calibrations. Calibrations are judged by overlaying the
+  pitch on the frame, not by the solver's own residual.
+- **The calibration trust threshold is per match.** The line-alignment score separates good from
+  bad projections *within* a match, but its scale depends on paint and floodlights (correct
+  calibrations on a floodlit match scored 0.12-0.53, where daylight ones score close to 1.0). Loosening the
+  white-pixel mask instead was tested and inflated a known-wrong frame from 0.64 to 1.00, so the
+  threshold adapts to each match's own distribution instead.
+- **Team-classifier embeddings carry no identity signal.** ResNet18 features separate kits but
+  rank a same-player pair above a different-teammate pair only 43% of the time (chance). OSNet,
+  trained for person re-identification, reaches 83.5%, and that gap is what made cross-cut
+  identity possible.
+- **A VLM beats OCR on shirt numbers.** easyocr's text detector misses most back-of-shirt
+  numbers; Qwen2-VL-2B produced 5-15x more confident numbers per half with no wrong answers on the
+  hand-labelled tracks. Lowering the minimum crop height from 90 to 70 px to gain coverage was
+  measured to make every metric worse, so it stays at 90.
+- **Goals come from the scoreboard, not from tracking.** The first complete match's only goal
+  happened on a close-up where tracking is correctly paused; the oracle catches it, with its
+  timing verified against the frame where the ball crosses the line.
+
+## Limitations
+
+- **Calibration coverage bounds everything.** Night matches and low, oblique stadium cameras sit
+  outside PnLCalib's training distribution; trusted coverage ranges from 25% to 71% per match,
+  and absolute event counts scale with it. A PnLCalib fine-tune on league frames, seeded by the
+  57 hand calibrations in [data/manual_calibration/](data/manual_calibration/), is the main open
+  lever.
+- **Shots other than goals are not detected reliably.** The detector reports only clear on-target
+  attempts; shot outcomes other than goals are left unknown.
+- **Restarts are over-detected** (about 3x the true throw-in count) because calibration error near
+  the touchline parks the ball estimate on the line. Pass precision is unaffected; `play_pattern`
+  tags are over-applied.
+- **Per-player counts are thin for players seen mostly on uncalibrated frames**, which holds the
+  rank correlation down even when the identity itself is right.
+
+## Repository layout
+
+```
+src/                 pipeline modules (perception, game state, ball tracking, events,
+                     identity, scoreboard OCR, report, evaluation, review UIs)
+scripts/             batch utilities (verification contact sheets, golden-set labelling sheets,
+                     full re-processing of one match)
+notebooks/           team-classification labelling, homography inspection, event QC,
+                     demo-clip rendering, detector training
+data/
+  object_detection/  971 labelled frames' YOLO labels (images not included) + CVAT export
+  golden_events/     hand-labelled ball-contact ground truth for 6 segments
+  manual_calibration/  57 hand-calibrated camera matrices (demo keyframes, fine-tune seed)
+models/detection/    fine-tuning config, metrics and curves (weights not included)
+docs/                capability assessment; README media
 ```
 
-**Per-frame fallback chain** (now wired into the runner): PnLCalib → sanity + line-alignment checks → optical-flow propagation (`camera_motion.py`, Lucas-Kanade on pitch features re-detected every 60 frames) → nearest manual seed (`manual_calibration.py`, `data/manual_calibration/{slug}_frame_{N:07d}.json`) → smoother stale-hold for up to 3 seconds. The end-of-run breakdown attributes each frame to one of these sources so it's immediately visible which stage is carrying the clip.
+## Running it
 
-**Ground-truth widgets** for evaluating and seeding the homography (all share the same on-disk schema — `load_match_seeds` reads any of them):
-- `build_labeling_widget` — click named landmarks (corners, halfway/CC intersections, PA + 6yd corners, penalty spots).
-- `build_line_labeling_widget` — drag pitch lines and tap arc-intersection points; one unified solver handles both.
-- `build_line_adjust_widget` — pre-projects every named line using the pipeline's current `P` so the user clicks to confirm and drags an endpoint to nudge — fastest path when the pipeline is mostly right.
-
-### 5. Game State, Ball Tracking & Event Detection (`src/game_state.py`, `src/pipeline.py`, `src/ball_tracker.py`, `src/events.py`)
-
-Perception runs **once** per half (`src.pipeline --half N`) and persists a per-frame game
-state to `output/game_state/{slug}/p{N}/` — players with pitch coordinates + team, every
-raw ball candidate detection, and the camera projection with a per-frame confidence. All
-analysis reads this artifact: no video decode, no GPU, iteration in seconds.
-`GameState.load(slug, period=N)` resolves per-half artifacts (legacy flat dirs still
-load); long runs write partial artifacts every 15k frames so a crash keeps everything up
-to the last checkpoint.
-
-**Ball tracking** (`src.ball_tracker`) is a pitch-space constant-velocity Kalman filter
-over the persisted candidates. Pitch space matters: the broadcast camera pans to follow
-the ball, so image-space extrapolation is wrong during exactly the detection gaps that
-need bridging, while the ground track of a pass is genuinely constant-velocity. The
-filter gates detections (Mahalanobis + motion consistency), coasts honestly through
-blackouts, and a hindsight pass bridges gaps bounded by detections ≤ 2.4 s apart —
-verified visually to land within ~1-2 m of the real ball mid-blackout.
-
-**Event detection** (`src.events`) follows the possession-then-event decision tree:
-nearest player within a possession radius per frame → debounced touches → each
-touch-to-touch transition classified as Pass / Carry / Shot / Possession Change. Events
-are emitted only on trusted frames (wide shot + per-match adaptive homography confidence
-gate). Locations come in both StatsBomb 120×80 (attack-normalized) and native metres.
-
-```bash
-# 1. Build the game state per half (slow, GPU — run once)
-python -m src.pipeline --match sut-mla --half 1 --offset_min 0 --duration_sec 2900 --pnl_stride 3
-# 2. Stabilize the stored homography (always, after any perception run)
-python -m src.stabilize --match sut-mla --half 1 --apply
-# 3. Ball-track coverage report (instant)
-python -m src.ball_tracker --match sut-mla --half 1
-# 4. Detect + export events (instant; no --half = merge all halves into one match file)
-python -m src.events --match sut-mla
-```
-
-### 6. Match Assembly: Goal Oracle & Report (`src/score_ocr.py`, `src/report.py`)
-
-Rule-based shot detection can't see goals that happen on close-up cameras (events are
-correctly paused there), but the broadcast itself announces the score. `src.score_ocr`
-sweeps the video for the score graphics (the intermittent top-left scoreboard and the
-red kickoff/goal/HT/FT banner), OCRs the score digits, and turns every monotonic score
-change into a **certain goal** with bracketed timing — on sut-mla the goal anchor landed
-within ~1 s of the pixel-verified ball-in-net moment. Oracle goals are injected into the
-merged export as StatsBomb Shots with outcome Goal (id 97) and declared brackets.
-
-`python -m src.events --match X` (no `--half`) merges all stored halves into one
-`output/events/{slug}_events.json`: running event index, possession numbering continuing
-across halftime, period-2 timestamps restarting at 00:00 with minute += 45, per-period
-track ids namespaced (no cross-half ReID yet), and player stats keyed to consolidated
-meta-tracks. `src.report` renders the one-page analyst report (mplsoccer): score header,
-stats block, pass-volume momentum with goal stars, per-team pass maps, shot/goal map,
-top passers → `output/reports/{slug}/`.
-
-```bash
-python -m src.score_ocr --match sut-mla --home_team 1   # once per match (CPU, ~30 min)
-python -m src.events --match sut-mla                    # merged match JSON
-python -m src.report --match sut-mla                    # one-page report PNG
-
-# ...or everything (both halves' perception -> stabilize -> oracle -> events
-# -> report) with one resumable command per match:
-python -m src.run_match --match sut-mla --home_team 1
-```
-
-### 7. Demo Video (`src/run_demo.py`, `notebooks/04_demo_video.ipynb`)
-
-Polished clip renderer used as a pitch artefact: tracked players with team-coloured ellipses, name + jersey-number badges, live km/h + cumulative distance, ball triangle, pitch-line homography overlay, and a bottom-right minimap. Each per-game render needs `PLAYER_NAMES: {track_id: (name, team_id, jersey_no)}` mapped from a `--discover`-mode pass that draws raw track IDs.
-
-The notebook bundles an iteration loop: scrub the rendered MP4 in a labeling widget tagging each frame Good / Drift / Wrong overlay / etc.; calibrate ground-truth `P` on the worst frames using the line-adjust widget seeded by the pipeline's own projection; and a compare cell that overlays current pipeline (white) vs ground truth (cyan) with per-frame mean pixel error at 7 reference world points. Saved GTs double as runtime seeds for the next render.
-
-```bash
-# Find track IDs first
-python -m src.run_demo --match sut-mla --start_ts 1:04:48 --duration_sec 16 --discover
-# Edit PLAYER_NAMES, then render
-python -m src.run_demo --match sut-mla --start_ts 1:04:48 --duration_sec 16
-```
-
-## Dataset
-
-971 labeled frames across 16 Montenegro 1.CFL matches (822 train / 149 val, match-level split). Annotations done in CVAT, exported as YOLO format. Validation split is at match level (entire matches held out) to prevent data leakage.
-
-## Tech Stack
-
-- Python 3.10+, Windows 11, NVIDIA RTX 5070 (CUDA 12.8)
-- **YOLOv8m** (Ultralytics) — fine-tuned for 2-class detection (person, ball)
-- **BoT-SORT** — multi-object tracking
-- **YOLOv8n-seg** — instance segmentation for team classification
-- **ResNet18** (frozen ImageNet backbone) — player appearance embeddings
-- **PCA + KNN** (scikit-learn) — supervised team classification (k=5, labeled per game)
-- **PnLCalib** (HRNetV2-W48) — pretrained pitch calibration model
-- **easyocr** — match clock reading
-- **OpenCV** — video I/O, image processing, homography estimation
-
-## Quick Start
+Requires Python 3.10+, an NVIDIA GPU for perception, and `ffmpeg`. Model weights (the fine-tuned
+YOLOv8m, PnLCalib, OSNet) and the match videos are not in the repository.
 
 ```bash
 pip install -r requirements.txt
 
-# Per-game team classification labeling + review + validation
-jupyter notebook notebooks/01_team_classification.ipynb
+# Whole chain for one match: perception (both halves) -> stabilise -> shirt numbers
+# -> scoreboard oracle -> events -> report. Resumable; roughly 10 h of GPU time.
+python -m src.run_match --match sut-mla --home_team 1
 
-# Run homography on a match clip
-python -m src.run_pnlcalib_video --match dec-mla --offset_min 10 --duration_sec 60
-
-# Perception → game state → events (see Layer 5)
-python -m src.pipeline --match sut-mla --offset_min 10 --duration_sec 240
+# Individual stages, all reading the persisted game state (CPU, seconds to minutes)
+python -m src.ball_tracker --match sut-mla --half 1
 python -m src.events --match sut-mla
+python -m src.report --match sut-mla
+
+# Human verification page for one half, then apply the exported verdicts
+python -m src.verify_ui --match sut-mla --half 1 --clips
+python -m src.verify_ui --apply verdicts.json
+
+# Evaluation
+python -m src.golden_eval --match sut-mla --half 1
+python -m src.sofa_eval --players
 ```
 
-## Known Issues
+## Tech stack
 
-- **Team classification** all 16 matches labeled; struggles on ~6 where jersey colors are similar or lighting is difficult (night games, oblique cameras). Majority vote per track reduces label-switch errors but ID swaps from long occlusions can still cause systematic misclassification.
-- **Referee/GK filtering** is weak — refs often cluster with one team. Future fix: use pitch position via homography
-- **Pitch homography** averages 71% coverage on raw PnLCalib v2; night games and oblique cameras remain challenging. Optical-flow propagation and manual seeds are wired in as fallbacks but the per-frame drift / wrong-overlay rate on demo clips is still high — actively being diagnosed via the GT iteration loop in `04_demo_video.ipynb`.
-- **Ball tracking** can only bridge gaps bounded by trusted detections; a blackout with no re-acquisition within 2.4 s loses the ball, and possession during it is honestly unknown (missed, not misattributed). Airborne balls project onto the pitch plane with overshoot while high.
-- **Shots are conservative** — direction-aware validation removed all nearest-goal artifacts; the detector now finds only clear on-target attempts (1 on the sut-mla full match, pixel-verified true positive). Goals come from the scoreboard oracle with certainty; shot *outcomes* beyond goals remain Unknown.
-- **Cross-half player identity is automatic but sparse for now** — `src/jersey_ocr.py` OCRs shirt numbers and resolves confident reads to a period-independent id, precision-validated (zero wrong answers on 13 hand-labeled tracks, one cross-half match visually confirmed) but low-coverage (easyocr-recall-limited to ~20-22 of 1300+ metas per half), so most outfield players still appear as separate consolidated ids per half (`player-mN` vs `player-mN-h2`) until coverage improves or appearance ReID lands.
-- **Goal-oracle team mapping is manual** — the graphics say home/away but classifier team ids are arbitrary per match; pass `--home_team` (verified via kit colors) per match.
-- **ars-dec source video** has a ~3:14 recording gap at the start of the second half
+PyTorch, Ultralytics YOLOv8 and BoT-SORT, PnLCalib (HRNetV2-W48), torchreid (OSNet-AIN),
+Hugging Face Transformers (Qwen2-VL-2B), easyocr, OpenCV, scikit-learn, pandas and PyArrow,
+mplsoccer. Developed on Windows 11 with an RTX 5070 (CUDA 12.8).
+
+## License
+
+[MIT](LICENSE).
