@@ -183,7 +183,7 @@ def scorecard(slugs: list) -> None:
 def player_scorecard(slug: str, verbose: bool = True) -> dict:
     """For players WE identify (jersey number + team), compare our pass count
     to SofaScore's. Absolute counts are coverage-scaled (we only see trusted
-    frames), so the business question is: does our per-player RANKING and
+    frames), so the real question is: does our per-player RANKING and
     relative magnitude track SofaScore for the players a coach would ask
     about? Reported as rank correlation + a side-by-side of the top passers.
 

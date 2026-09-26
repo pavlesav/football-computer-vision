@@ -3,7 +3,7 @@
 *Measured against SofaScore last-season data as ground truth. Written 2026-07-07.*
 
 This is the honest, numbers-first statement of what the system can and cannot
-do today, so product and business decisions rest on evidence, not hope. Every
+do today, so engineering decisions rest on evidence, not hope. Every
 number here is reproducible: `python -m src.sofa_eval` (team level) and
 `--players` (player level).
 
@@ -178,7 +178,7 @@ last per-match human step before the identity review itself.
 
 ### Update 2026-07-11 (fourth pass) — the human verification loop, measured on real usage
 
-Pavle ran the first real review with `src/verify_ui.py` (verification-first
+The first real review was run with `src/verify_ui.py` (verification-first
 UI: confirm/correct each machine-proposed identity, name the residual
 unattributed tracks) on **sut-pet half 1** — a match with zero prior human
 input — in ~10 minutes: 8 identities confirmed, 7 rejected, 5 tracks newly
@@ -192,7 +192,7 @@ named, 4 flagged as mixed. Measured effect:
 
 XI drops because rejections delete wrong identities — precision cleanup by
 design (e.g. t0 #16 is now exactly 40 passes vs SofaScore's 40). The
-cost/benefit line for the business plan: **~10 min of delegable human
+cost/benefit: **~10 min of delegable human
 verification per half buys ~+0.2 rho on that match**; a full 14-half sweep is
 ~2.5 h of student work. The 7-of-15 rejection rate on identity cards also
 confirms with human eyes that mixed-fragment groups (ID swaps + wrong ReID
@@ -226,7 +226,7 @@ evidence), 14 tracks newly numbered, 13 flagged mixed.**
 |---|---|---|---|---|
 | Morning baseline (human seeds only) | 0.433 | 43.1% | 38.2% | 125/210 |
 | VLM automatic (no review) | 0.381 | 54.2% | 60.5% | 173/210 |
-| + full review sweep (Pavle H1 + model 13 halves) | **0.443** | **56.0%** | 59.1% | 161/210 |
+| + full review sweep (human H1 + model 13 halves) | **0.443** | **56.0%** | 59.1% | 161/210 |
 
 Per-match rho after review: jez-jed **0.74**, dec-mla **0.71**, sut-mla
 **0.66**, sut-pet **0.53**, jez-ars 0.36, jed-ars 0.29, mla-bud-2 0.09.

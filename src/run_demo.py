@@ -1,6 +1,6 @@
 """
-Demo clip renderer (legacy showcase; kept because it shares perception code
-with the pipeline and is useful for eyeballing).
+Demo clip renderer: a short annotated clip for visual inspection. Shares its
+perception code with the match pipeline.
 
 Pipeline per frame: YOLO + BoT-SORT for player/ball detection, smoothed
 manual-seed homography (data/manual_calibration/), manual ball annotations
