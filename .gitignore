@@ -1,33 +1,37 @@
-# Videos (too large for git)
+# Source match videos and all generated outputs (large, reproducible)
 videos/
-
-# Output videos and test frames
 output/
 
-# Training images (large, labels + data.yaml ARE tracked)
+# Data: labels, golden events, calibrations and period boundaries are tracked;
+# images, caches and per-match identity/lineup/ground-truth files are not
+data/object_detection/images/
+data/identities/
+data/lineups/
+data/sofa_truth/
 dataset/
-data/
 *.cache
 
-# Model weights
+# Model weights and third-party model code (PnLCalib, ~640 MB)
 *.pt
 *.pth
 *.npy
-
-# PnLCalib third-party repo (code + weights, ~640MB)
 models/pnlcalib/
+models/reid/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 .ipynb_checkpoints/
+*.log
 
-# OS
+# OS / IDE
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
 
-# IDE
+# Local AI-assistant config and internal planning notes
 .claude/
-data/sofa_truth/
-output/shot_spotting/
+CLAUDE.md
+docs/BUSINESS_PLAN.md
