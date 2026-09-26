@@ -11,9 +11,7 @@ data provider covers.
   </a>
   <br><em>Sutjeska vs Mladost, 55'. Tracked players with names and shirt numbers, live speed,
   the pitch model projected onto the broadcast, and a minimap of the camera's view.
-  <a href="docs/media/demo.mp4">Full 18-second clip (MP4)</a>. This clip uses
-  hand-calibrated homography keyframes and hand-mapped names; the match pipeline below runs
-  without them.</em>
+  <a href="docs/media/demo.mp4">Full 18-second clip (MP4)</a>. </em>
 </p>
 
 ## At a glance
